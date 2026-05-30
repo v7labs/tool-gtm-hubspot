@@ -11,8 +11,19 @@ const DEAL_PROPERTIES = [
   "description",
   "hs_lastmodifieddate",
   "dealtype",
+  // Lead-source attribution. Only properties confirmed to exist on the deals
+  // object in this portal are fetched (verified 2026-05-31 via the properties
+  // API). `hs_latest_source*` and `hs_deal_source` are NOT present on deals
+  // here (latest-source lives on the contact), so they are intentionally
+  // omitted — see manifest.ts/stage-history.ts for the contact-side source.
   "hs_analytics_source",
-  "hs_deal_source",
+  "hs_analytics_source_data_1",
+  "hs_analytics_source_data_2",
+  "hs_object_source",
+  "hs_object_source_label",
+  "hs_object_source_detail_1",
+  "hs_object_source_detail_2",
+  "hs_object_source_detail_3",
 ];
 
 export async function getDeal(dealId: string): Promise<HubSpotRecord> {

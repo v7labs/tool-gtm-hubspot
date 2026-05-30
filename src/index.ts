@@ -36,7 +36,7 @@ server.registerTool(
   "get_deal_stage_history",
   {
     description:
-      "Fetch per-stage dwell times and disqualification reason for a HubSpot deal. Returns stage occupancy timeline (enteredAt/exitedAt/durationDays), total age, and closed-lost reason.",
+      "Fetch per-stage dwell times, pipeline-transition timeline, and disqualification reason for a HubSpot deal. Returns stage occupancy (enteredAt/exitedAt/durationDays), total age, closed-lost & disqualification reasons, whether it passed a Disqualified stage, the cross-pipeline history, and movedToPipeline (the pipeline a qualified deal moved into, e.g. New Business).",
     inputSchema: {
       dealId: z.string().describe("HubSpot deal object ID"),
     },

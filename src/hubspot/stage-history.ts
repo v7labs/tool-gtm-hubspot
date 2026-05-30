@@ -8,15 +8,31 @@ const STAGE_HISTORY_PROPERTIES = [
   "hs_lastmodifieddate",
   "hs_closed_lost_reason",
   "closed_lost_reason",
+  // Lead-management pipelines record a disqualification reason in a custom
+  // property distinct from closed-lost (verified 2026-05-31: the property is
+  // `disqualified_reason`, e.g. "No Project").
+  "disqualified_reason",
 ];
 
-const STAGE_HISTORY_WITH_HISTORY = ["dealstage"];
+// Request history for both `dealstage` AND `pipeline` so cross-pipeline
+// journeys (e.g. lead-mgmt → New Business) are captured, not just stage jumps.
+const STAGE_HISTORY_WITH_HISTORY = ["dealstage", "pipeline"];
 
 const MS_PER_DAY = 1000 * 60 * 60 * 24;
+
+const DISQUALIFIED_LABEL = /disqualif/i;
 
 export type StageOccupancy = {
   stageId: string;
   label: string;
+  enteredAt: string;
+  exitedAt: string | null;
+  durationDays: number;
+};
+
+export type PipelineOccupancy = {
+  pipelineId: string;
+  label: string | null;
   enteredAt: string;
   exitedAt: string | null;
   durationDays: number;
@@ -30,9 +46,21 @@ export type DealStageHistory = {
   currentStageLabel: string | null;
   isClosed: boolean;
   closedLostReason: string | null;
+  // Lead-mgmt disqualification reason (custom property), surfaced alongside
+  // closedLostReason since a Disqualified stage may not be a closed-lost stage.
+  disqualificationReason: string | null;
+  // True when the deal occupied a Disqualified stage at any point, even if the
+  // CURRENT stage's metadata doesn't flag it as closed.
+  passedDisqualifiedStage: boolean;
   totalAgeDays: number;
   hasStageHistory: boolean;
   stages: StageOccupancy[];
+  // Pipeline-change timeline (one entry per distinct pipeline occupied).
+  pipelineHistory: PipelineOccupancy[];
+  // The pipeline the deal moved INTO when it crossed pipelines (e.g. the
+  // qualified → New Business `689928` move). Null when the deal never changed
+  // pipeline. First-class so the WIN signal is directly detectable.
+  movedToPipeline: { id: string; label: string | null; at: string } | null;
 };
 
 type HistoryEntry = { value?: string; timestamp?: string | Date };
@@ -68,15 +96,30 @@ export async function getDealStageHistory(dealId: string): Promise<DealStageHist
   const currentStageId = properties.dealstage ?? null;
   const closedLostReason =
     properties.hs_closed_lost_reason ?? properties.closed_lost_reason ?? null;
+  const disqualificationReason = properties.disqualified_reason ?? null;
 
   const { pipeline, stage: currentStage } = await resolvePipelineStage(
     pipelineId,
     currentStageId,
   );
 
-  // Resolve stage labels via one in-memory map rather than re-entering
-  // resolvePipelineStage per entry (it's a pure cache lookup post-load).
-  const stageById = new Map((pipeline?.stages ?? []).map((s) => [s.id, s] as const));
+  // Resolve stage AND pipeline labels across EVERY pipeline (not just the
+  // current one) so historical stages from a deal's prior pipeline — e.g. the
+  // lead-mgmt stages of a deal now in New Business — still resolve to labels
+  // instead of falling back to raw ids. Pure cache lookups post-load.
+  const allPipelines = await loadDealPipelines();
+  const stageById = new Map<string, { id: string; label: string; isClosed: boolean }>();
+  const pipelineLabelById = new Map<string, string>();
+  const disqualifiedStageIds = new Set<string>();
+  for (const p of allPipelines) {
+    pipelineLabelById.set(p.id, p.label);
+    for (const s of p.stages) {
+      stageById.set(s.id, s);
+      if (DISQUALIFIED_LABEL.test(s.label)) {
+        disqualifiedStageIds.add(s.id);
+      }
+    }
+  }
 
   // propertiesWithHistory is outside the SDK's typed return shape, so it's
   // cast — but never trusted: guard against a missing/non-array dealstage and
@@ -136,6 +179,51 @@ export async function getDealStageHistory(dealId: string): Promise<DealStageHist
     totalAgeDays = roundDays(now - enteredMs);
   }
 
+  // Pipeline-change timeline. Parse the `pipeline` property history the same
+  // defensive way as dealstage, then collapse consecutive identical values into
+  // occupancy spans (one entry per distinct pipeline the deal sat in).
+  const rawPipeline = propertiesWithHistory.pipeline;
+  const pipelineEvents = (Array.isArray(rawPipeline) ? rawPipeline : [])
+    .filter((entry): entry is { value: string; timestamp: string | Date } =>
+      Boolean(entry && entry.value && entry.timestamp) &&
+      isValidTimestamp(entry.timestamp as string | Date),
+    )
+    .map((entry) => ({ value: entry.value, timestamp: entry.timestamp }))
+    .sort((a, b) => toMillis(a.timestamp) - toMillis(b.timestamp));
+
+  const collapsedPipeline = pipelineEvents.filter(
+    (entry, index) => index === 0 || entry.value !== pipelineEvents[index - 1].value,
+  );
+
+  const pipelineHistory: PipelineOccupancy[] = collapsedPipeline.map((entry, index) => {
+    const enteredMs = toMillis(entry.timestamp);
+    const nextEntry = collapsedPipeline[index + 1];
+    const exitedMs = nextEntry ? toMillis(nextEntry.timestamp) : now;
+    return {
+      pipelineId: entry.value,
+      label: pipelineLabelById.get(entry.value) ?? null,
+      enteredAt: toIso(entry.timestamp),
+      exitedAt: nextEntry ? toIso(nextEntry.timestamp) : null,
+      durationDays: roundDays(exitedMs - enteredMs),
+    };
+  });
+
+  // The deal crossed pipelines when it occupied more than one distinct
+  // pipeline; the WIN signal is the final pipeline it moved into.
+  const lastPipeline = pipelineHistory[pipelineHistory.length - 1];
+  const movedToPipeline =
+    pipelineHistory.length > 1 && lastPipeline
+      ? {
+          id: lastPipeline.pipelineId,
+          label: lastPipeline.label,
+          at: lastPipeline.enteredAt,
+        }
+      : null;
+
+  const passedDisqualifiedStage = stages.some((occupancy) =>
+    disqualifiedStageIds.has(occupancy.stageId),
+  );
+
   return {
     dealId,
     pipelineId,
@@ -144,8 +232,12 @@ export async function getDealStageHistory(dealId: string): Promise<DealStageHist
     currentStageLabel: currentStage?.label ?? null,
     isClosed: currentStage?.isClosed ?? false,
     closedLostReason,
+    disqualificationReason,
+    passedDisqualifiedStage,
     totalAgeDays,
     hasStageHistory,
     stages,
+    pipelineHistory,
+    movedToPipeline,
   };
 }

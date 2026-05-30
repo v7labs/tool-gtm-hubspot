@@ -99,12 +99,22 @@ export async function buildDealManifest(
       "name",
       "domain",
       "industry",
+      // Company-level original source — lead source frequently lives here.
+      "hs_analytics_source",
+      "hs_analytics_source_data_1",
+      "hs_analytics_source_data_2",
     ]),
     batchReadObjects("contacts", enrichedContacts.map((edge) => edge.toObjectId), [
       "firstname",
       "lastname",
       "email",
       "jobtitle",
+      // Contact-level source attribution — the "from where" signal most often
+      // originates on the associated contact rather than the deal.
+      "hs_analytics_source",
+      "hs_analytics_source_data_1",
+      "hs_analytics_source_data_2",
+      "hs_latest_source",
     ]),
   ]);
 
@@ -219,21 +229,32 @@ export async function buildDealManifest(
   const ownerId = deal.properties.hubspot_owner_id ?? "";
   const ownerName = await resolveOwnerName(ownerId || null);
 
+  // Persist each source-attribution property as a DISTINCT field rather than
+  // collapsing them into one coarse token, so the analyst can answer "from
+  // where" at full resolution (original source × drill-downs × creation source).
   const properties: Record<string, string> = {
     amount: deal.properties.amount ?? "",
     closedate: deal.properties.closedate ?? "",
     dealtype: deal.properties.dealtype ?? "",
     description: deal.properties.description ?? "",
     hs_deal_stage_probability: deal.properties.hs_deal_stage_probability ?? "",
-    hs_deal_source:
-      deal.properties.hs_deal_source ??
-      deal.properties.hs_analytics_source ??
-      "",
+    hs_analytics_source: deal.properties.hs_analytics_source ?? "",
+    hs_analytics_source_data_1: deal.properties.hs_analytics_source_data_1 ?? "",
+    hs_analytics_source_data_2: deal.properties.hs_analytics_source_data_2 ?? "",
+    hs_object_source: deal.properties.hs_object_source ?? "",
+    hs_object_source_label: deal.properties.hs_object_source_label ?? "",
+    hs_object_source_detail_1: deal.properties.hs_object_source_detail_1 ?? "",
+    hs_object_source_detail_2: deal.properties.hs_object_source_detail_2 ?? "",
+    hs_object_source_detail_3: deal.properties.hs_object_source_detail_3 ?? "",
   };
 
   const hasReferralDealEdge = enrichedDealDeals.some((edge) =>
     edge.labels.some((label) => /referral|referred|source/i.test(label)),
   );
+
+  // Motion derivation still needs a single source signal; prefer the deal's
+  // analytics source (the verified deal-level source token on this portal).
+  const dealSourceSignal = deal.properties.hs_analytics_source ?? "";
 
   const motion = deriveMotion({
     dealId,
@@ -241,7 +262,7 @@ export async function buildDealManifest(
     pipelineLabel: pipeline?.label ?? null,
     stageLabel: stage?.label ?? null,
     dealtype: properties.dealtype,
-    hsDealSource: properties.hs_deal_source,
+    hsDealSource: dealSourceSignal,
     hasReferralDealEdge,
     lifecycle,
   });
