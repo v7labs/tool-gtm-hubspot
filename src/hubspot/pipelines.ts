@@ -1,7 +1,7 @@
 import { getHubSpotClient } from "./client.js";
 import { getOwnerName } from "./client.js";
 
-type PipelineStage = { id: string; label: string; isClosed: boolean };
+export type PipelineStage = { id: string; label: string; isClosed: boolean };
 type Pipeline = { id: string; label: string; stages: PipelineStage[] };
 
 let pipelineCache: Pipeline[] | null = null;

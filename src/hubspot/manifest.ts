@@ -239,6 +239,10 @@ export async function buildDealManifest(
     description: deal.properties.description ?? "",
     hs_deal_stage_probability: deal.properties.hs_deal_stage_probability ?? "",
     hs_analytics_source: deal.properties.hs_analytics_source ?? "",
+    // Back-compat alias: older readers keyed on `hs_deal_source`. That property
+    // doesn't exist on deals in this portal, so aliasing it to
+    // `hs_analytics_source` reproduces the prior effective (empty→source) value.
+    hs_deal_source: deal.properties.hs_analytics_source ?? "",
     hs_analytics_source_data_1: deal.properties.hs_analytics_source_data_1 ?? "",
     hs_analytics_source_data_2: deal.properties.hs_analytics_source_data_2 ?? "",
     hs_object_source: deal.properties.hs_object_source ?? "",

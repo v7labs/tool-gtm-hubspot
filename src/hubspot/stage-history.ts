@@ -1,5 +1,6 @@
 import { getHubSpotClient } from "./client.js";
 import { loadDealPipelines, resolvePipelineStage } from "./pipelines.js";
+import type { PipelineStage } from "./pipelines.js";
 
 const STAGE_HISTORY_PROPERTIES = [
   "dealstage",
@@ -83,7 +84,6 @@ function isValidTimestamp(timestamp: string | Date): boolean {
 
 export async function getDealStageHistory(dealId: string): Promise<DealStageHistory> {
   const hubspot = getHubSpotClient();
-  await loadDealPipelines();
 
   const deal = await hubspot.crm.deals.basicApi.getById(
     dealId,
@@ -108,12 +108,18 @@ export async function getDealStageHistory(dealId: string): Promise<DealStageHist
   // lead-mgmt stages of a deal now in New Business — still resolve to labels
   // instead of falling back to raw ids. Pure cache lookups post-load.
   const allPipelines = await loadDealPipelines();
-  const stageById = new Map<string, { id: string; label: string; isClosed: boolean }>();
+  // Assumes HubSpot deal-stage ids are unique per portal (true on this portal):
+  // a single global stageById/disqualifiedStageIds is built across ALL
+  // pipelines, so a stage id colliding between two pipelines would clobber.
+  const stageById = new Map<string, PipelineStage>();
   const pipelineLabelById = new Map<string, string>();
   const disqualifiedStageIds = new Set<string>();
   for (const p of allPipelines) {
     pipelineLabelById.set(p.id, p.label);
     for (const s of p.stages) {
+      if (stageById.has(s.id)) {
+        // Duplicate stage id across pipelines — last wins; see comment above.
+      }
       stageById.set(s.id, s);
       if (DISQUALIFIED_LABEL.test(s.label)) {
         disqualifiedStageIds.add(s.id);
