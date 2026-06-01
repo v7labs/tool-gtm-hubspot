@@ -16,7 +16,13 @@ let client: Client | null = null;
 
 export function getHubSpotClient(): Client {
   if (!client) {
-    client = new Client({ accessToken: getHubSpotAccessToken() });
+    // numberOfApiCallRetries enables the SDK's built-in backoff/retry on 429
+    // (rate limit) and 5xx — important for bulk sync and paginated search,
+    // which fan out many calls. Max supported by the SDK is 6.
+    client = new Client({
+      accessToken: getHubSpotAccessToken(),
+      numberOfApiCallRetries: 3,
+    });
   }
 
   return client;
