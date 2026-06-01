@@ -78,7 +78,10 @@ export async function batchReadObjects(
   const records: HubSpotRecord[] = [];
   for (let index = 0; index < ids.length; index += chunkSize) {
     const inputs = ids.slice(index, index + chunkSize).map((id) => ({ id }));
-    const response = await scheduleHubSpotRequest(() => readChunk(inputs));
+    const response = await scheduleHubSpotRequest(
+      () => readChunk(inputs),
+      `batchRead:${objectType}`,
+    );
     records.push(...(response.results ?? []).map(toHubSpotRecord));
   }
 
@@ -110,10 +113,28 @@ function toHubSpotRecord(object: SimplePublicObject): HubSpotRecord {
 // a sync, but getOwnerName is called once per activity, so without this memo a
 // 94-activity deal fires ~94 identical owner lookups — a major amplifier of the
 // per-10s burst the throttler is fighting. Collapses to one call per distinct
-// owner. Module-scoped to mirror the existing schema/pipeline caches; only
-// SUCCESSFUL resolutions are cached so a transient (e.g. 429) failure is retried
-// rather than poisoning the cache with a spurious null.
+// owner. Module-scoped to mirror the existing schema/pipeline caches.
+//
+// Both successes AND permanent failures are cached: a deactivated/deleted owner
+// (HubSpot answers 404) never resolves, yet its id can sit on hundreds of
+// historical activities — re-fetching it per activity was THE dominant source
+// of per-deal call volume (863 of 1,267 calls on the worst-case deal). Caching
+// the null collapses each distinct owner id to a single lookup. Only transient
+// failures (429/5xx) are left uncached so a later activity can retry, preserving
+// the original "don't poison the cache on a blip" guarantee. The resolved value
+// is null either way for a missing owner, so cached output is unchanged.
 const ownerNameCache = new Map<string, string | null>();
+
+function isTransientOwnerError(error: unknown): boolean {
+  const candidate = error as {
+    code?: number;
+    statusCode?: number;
+    response?: { status?: number };
+  };
+  const status =
+    candidate?.code ?? candidate?.statusCode ?? candidate?.response?.status;
+  return status === 429 || (typeof status === "number" && status >= 500);
+}
 
 export async function getOwnerName(ownerId: string | null | undefined): Promise<string | null> {
   if (!ownerId) {
@@ -126,8 +147,9 @@ export async function getOwnerName(ownerId: string | null | undefined): Promise<
 
   try {
     const hubspot = getHubSpotClient();
-    const owner = await scheduleHubSpotRequest(() =>
-      hubspot.crm.owners.ownersApi.getById(Number(ownerId)),
+    const owner = await scheduleHubSpotRequest(
+      () => hubspot.crm.owners.ownersApi.getById(Number(ownerId)),
+      "owner.getById",
     );
     const first = owner.firstName ?? "";
     const last = owner.lastName ?? "";
@@ -135,7 +157,10 @@ export async function getOwnerName(ownerId: string | null | undefined): Promise<
     const resolved = full || owner.email || null;
     ownerNameCache.set(ownerId, resolved);
     return resolved;
-  } catch {
+  } catch (error) {
+    if (!isTransientOwnerError(error)) {
+      ownerNameCache.set(ownerId, null);
+    }
     return null;
   }
 }

@@ -86,12 +86,14 @@ function isValidTimestamp(timestamp: string | Date): boolean {
 export async function getDealStageHistory(dealId: string): Promise<DealStageHistory> {
   const hubspot = getHubSpotClient();
 
-  const deal = await scheduleHubSpotRequest(() =>
-    hubspot.crm.deals.basicApi.getById(
-      dealId,
-      STAGE_HISTORY_PROPERTIES,
-      STAGE_HISTORY_WITH_HISTORY,
-    ),
+  const deal = await scheduleHubSpotRequest(
+    () =>
+      hubspot.crm.deals.basicApi.getById(
+        dealId,
+        STAGE_HISTORY_PROPERTIES,
+        STAGE_HISTORY_WITH_HISTORY,
+      ),
+    "deal.getById.withHistory",
   );
 
   const properties = deal.properties ?? {};

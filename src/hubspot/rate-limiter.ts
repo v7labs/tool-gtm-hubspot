@@ -10,6 +10,46 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// ---------------------------------------------------------------------------
+// Per-call-site instrumentation (off by default).
+//
+// Every HubSpot request funnels through `scheduleHubSpotRequest`, so tagging
+// that one chokepoint with a call-site `label` and counting by label gives an
+// exact attribution of where a deal's API volume comes from — the breakdown
+// used to find (and prove the fix for) the N+1 fan-out. Counting is opt-in
+// (HUBSPOT_CALL_COUNT=1, HUBSPOT_THROTTLE_LOG=1, or `setHubSpotCallCounting`)
+// and adds only a Map increment, so the default sync path is unchanged.
+// ---------------------------------------------------------------------------
+let callCountingEnabled =
+  process.env.HUBSPOT_CALL_COUNT === "1" ||
+  process.env.HUBSPOT_CALL_COUNT === "true" ||
+  THROTTLE_LOG;
+const callCounts = new Map<string, number>();
+
+export function setHubSpotCallCounting(enabled: boolean): void {
+  callCountingEnabled = enabled;
+}
+
+export function resetHubSpotCallCounts(): void {
+  callCounts.clear();
+}
+
+/** Per-call-site tally since the last reset, sorted high→low for reporting. */
+export function getHubSpotCallCounts(): Record<string, number> {
+  return Object.fromEntries(
+    [...callCounts.entries()].sort((a, b) => b[1] - a[1]),
+  );
+}
+
+/** Total scheduled requests recorded across all call sites. */
+export function getHubSpotCallTotal(): number {
+  let total = 0;
+  for (const count of callCounts.values()) {
+    total += count;
+  }
+  return total;
+}
+
 export type RateLimiterMetrics = {
   /** Requests that have reserved a slot (admitted to the limiter). */
   scheduled: number;
@@ -109,7 +149,17 @@ export function getHubSpotRateLimiter(): RateLimiter {
  * Funnel a single HubSpot API call through the shared limiter. EVERY HubSpot
  * request (batch read, search, pipelines, associations, owners, …) should be
  * wrapped in this so the global spacing holds.
+ *
+ * `label` is an optional, stable call-site tag used purely for profiling
+ * attribution (see {@link getHubSpotCallCounts}); it has no effect on
+ * scheduling.
  */
-export function scheduleHubSpotRequest<T>(fn: () => Promise<T>): Promise<T> {
+export function scheduleHubSpotRequest<T>(
+  fn: () => Promise<T>,
+  label = "unlabeled",
+): Promise<T> {
+  if (callCountingEnabled) {
+    callCounts.set(label, (callCounts.get(label) ?? 0) + 1);
+  }
   return getHubSpotRateLimiter().schedule(fn);
 }

@@ -3,14 +3,37 @@ import { join } from "node:path";
 import { existsSync } from "node:fs";
 import type { DealManifest } from "../../hubspot/manifest.js";
 import { getCompany, listCompanyDealIds } from "../../hubspot/company.js";
-import { buildDealManifest } from "../../hubspot/manifest.js";
 import { getManifestRunCache } from "../../hubspot/manifest-cache.js";
-import { getCompanyName } from "../../hubspot/deals.js";
+import { batchReadObjects } from "../../hubspot/client.js";
+import {
+  batchGetAssociations,
+  formatAssociationLabels,
+  getAssociationSchema,
+} from "../../hubspot/associations.js";
+import { resolvePipelineStage } from "../../hubspot/pipelines.js";
+import {
+  deriveMotion,
+  loadLifecycleConfig,
+  type DealMotion,
+} from "../../hubspot/motion.js";
+import { getCompanyName, getDealName } from "../../hubspot/deals.js";
 import { companyRecordUrl } from "../../hubspot/company.js";
 import { hubspotSourceBanner } from "../learnings.js";
 import { sanitizeFilename, upsertVaultNote, wikilink } from "../writer.js";
 import { dealFolderPathV2 } from "./paths.js";
 import { briefNoteTitle } from "./render.js";
+
+// Only the fields the account rollup table renders, plus the inputs
+// `deriveMotion` needs. Deliberately a small subset of the full deal-property
+// set so a sibling row is one batched read, never a full manifest build.
+const ROLLUP_DEAL_PROPERTIES = [
+  "dealname",
+  "amount",
+  "pipeline",
+  "dealstage",
+  "dealtype",
+  "hs_analytics_source",
+];
 
 const CAPITAL_DYNAMICS_COMPANY_ID = "29053398081";
 
@@ -161,22 +184,7 @@ export async function syncAccountRollup(
     dealIds.unshift(seedManifest.deal_id);
   }
 
-  const deals: AccountDealRow[] = [];
-  for (const dealId of dealIds) {
-    const manifest =
-      seedManifest?.deal_id === dealId
-        ? seedManifest
-        : await buildDealManifest(dealId, { vaultPath });
-    deals.push({
-      dealId: manifest.deal_id,
-      dealName: manifest.deal_name,
-      motion: manifest.motion,
-      stageLabel: manifest.stage?.label ?? "",
-      pipelineLabel: manifest.pipeline?.label ?? "",
-      amount: manifest.properties.amount ?? "",
-      briefFolder: dealFolderPathV2(manifest.deal_id, manifest.deal_name),
-    });
-  }
+  const deals = await buildAccountDealRows(dealIds, vaultPath, seedManifest);
 
   const relativePath = `${folder}/${accountFileName()}`;
   await mkdir(join(vaultPath, folder), { recursive: true });
@@ -210,4 +218,121 @@ async function loadCompanyRollupInputs(
 
   const cache = getManifestRunCache();
   return cache ? cache.getOrLoadCompanyInputs(companyId, load) : load();
+}
+
+function rollupRow(params: {
+  dealId: string;
+  dealName: string;
+  motion: DealMotion;
+  stageLabel: string;
+  pipelineLabel: string;
+  amount: string;
+}): AccountDealRow {
+  return {
+    dealId: params.dealId,
+    dealName: params.dealName,
+    motion: params.motion,
+    stageLabel: params.stageLabel,
+    pipelineLabel: params.pipelineLabel,
+    amount: params.amount,
+    briefFolder: dealFolderPathV2(params.dealId, params.dealName),
+  };
+}
+
+/**
+ * Build the account-rollup table rows for every deal in a company.
+ *
+ * Previously this rebuilt a FULL DealManifest per sibling deal (activities,
+ * contacts, per-activity associations, …) just to read each deal's
+ * name/stage/pipeline/amount/motion for one table row — an O(siblings) API
+ * fan-out that dominated per-deal call volume. The rollup only needs a handful
+ * of deal properties plus the deal↔deal edges that feed `deriveMotion`, so we
+ * fetch ALL siblings in two batched reads (`batchReadObjects` +
+ * `batchGetAssociations`, ≤100 ids/chunk) and derive each row locally.
+ *
+ * Output is byte-for-byte identical to the per-manifest path: name, amount, and
+ * pipeline/stage labels come from the same properties via the same
+ * `resolvePipelineStage`, and motion is the same `deriveMotion` call with the
+ * same referral-edge signal — only the transport (batched vs per-deal) changes.
+ * The triggering deal's row is taken from its already-built `seedManifest`.
+ */
+async function buildAccountDealRows(
+  dealIds: string[],
+  vaultPath: string,
+  seedManifest: DealManifest | undefined,
+): Promise<AccountDealRow[]> {
+  const seedId = seedManifest?.deal_id;
+  const fetchIds = dealIds.filter((id) => id !== seedId);
+
+  const [dealRecords, dealDealEdges, lifecycle] = await Promise.all([
+    batchReadObjects("deals", fetchIds, ROLLUP_DEAL_PROPERTIES),
+    batchGetAssociations("deals", fetchIds, "deals"),
+    loadLifecycleConfig(vaultPath),
+  ]);
+  // deals→deals labels feed the referral-motion signal; schema is cached once
+  // per run after the first lookup (and skipped entirely when nothing to fetch).
+  const dealDealSchema =
+    fetchIds.length > 0 ? await getAssociationSchema("deals", "deals") : [];
+  const recordById = new Map(dealRecords.map((record) => [record.id, record]));
+
+  const rows: AccountDealRow[] = [];
+  for (const dealId of dealIds) {
+    if (seedManifest && dealId === seedId) {
+      rows.push(
+        rollupRow({
+          dealId: seedManifest.deal_id,
+          dealName: seedManifest.deal_name,
+          motion: seedManifest.motion,
+          stageLabel: seedManifest.stage?.label ?? "",
+          pipelineLabel: seedManifest.pipeline?.label ?? "",
+          amount: seedManifest.properties.amount ?? "",
+        }),
+      );
+      continue;
+    }
+
+    const record = recordById.get(dealId);
+    if (!record) {
+      // listCompanyDealIds only returns currently-associated deals; a missing
+      // record means the deal was unreadable between listing and read. Skip it
+      // rather than fail the whole rollup (the prior per-manifest path would
+      // have thrown here).
+      continue;
+    }
+
+    const properties = record.properties;
+    const { pipeline, stage } = await resolvePipelineStage(
+      properties.pipeline ?? null,
+      properties.dealstage ?? null,
+    );
+    const edges = dealDealEdges.get(dealId) ?? [];
+    const hasReferralDealEdge = edges.some((edge) =>
+      formatAssociationLabels(edge.associationTypes, dealDealSchema).some(
+        (label) => /referral|referred|source/i.test(label),
+      ),
+    );
+    const motion = deriveMotion({
+      dealId,
+      pipelineId: pipeline?.id ?? properties.pipeline ?? null,
+      pipelineLabel: pipeline?.label ?? null,
+      stageLabel: stage?.label ?? null,
+      dealtype: properties.dealtype ?? "",
+      hsDealSource: properties.hs_analytics_source ?? "",
+      hasReferralDealEdge,
+      lifecycle,
+    });
+
+    rows.push(
+      rollupRow({
+        dealId,
+        dealName: getDealName(record),
+        motion,
+        stageLabel: stage?.label ?? "",
+        pipelineLabel: pipeline?.label ?? "",
+        amount: properties.amount ?? "",
+      }),
+    );
+  }
+
+  return rows;
 }

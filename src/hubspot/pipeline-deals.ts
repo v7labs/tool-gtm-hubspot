@@ -61,8 +61,9 @@ export async function listOpenDealIdsInPipeline(
       break;
     }
 
-    const response = await scheduleHubSpotRequest(() =>
-      hubspot.crm.deals.searchApi.doSearch({
+    const response = await scheduleHubSpotRequest(
+      () =>
+        hubspot.crm.deals.searchApi.doSearch({
         filterGroups: [
           {
             filters: [
@@ -83,6 +84,7 @@ export async function listOpenDealIdsInPipeline(
         limit: Math.min(SEARCH_PAGE_SIZE, remaining),
         after,
       }),
+      "deals.search",
     );
 
     for (const deal of response.results ?? []) {

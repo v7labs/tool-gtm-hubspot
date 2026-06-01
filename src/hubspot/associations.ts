@@ -34,8 +34,10 @@ export async function getAssociationSchema(
   }
 
   const hubspot = getHubSpotClient();
-  const response = await scheduleHubSpotRequest(() =>
-    hubspot.crm.associations.v4.schema.definitionsApi.getAll(fromType, toType),
+  const response = await scheduleHubSpotRequest(
+    () =>
+      hubspot.crm.associations.v4.schema.definitionsApi.getAll(fromType, toType),
+    `assoc.schema.getAll:${fromType}->${toType}`,
   );
 
   const entries: AssociationSchemaEntry[] = (response.results ?? []).map((spec) => ({
@@ -87,14 +89,16 @@ export async function getAssociations(
   let after: string | undefined;
 
   do {
-    const page = await scheduleHubSpotRequest(() =>
-      hubspot.crm.associations.v4.basicApi.getPage(
-        fromType,
-        fromId,
-        toType,
-        after,
-        500,
-      ),
+    const page = await scheduleHubSpotRequest(
+      () =>
+        hubspot.crm.associations.v4.basicApi.getPage(
+          fromType,
+          fromId,
+          toType,
+          after,
+          500,
+        ),
+      `assoc.getPage:${fromType}->${toType}`,
     );
 
     for (const result of page.results ?? []) {
@@ -138,10 +142,12 @@ export async function batchGetAssociations(
 
   for (let index = 0; index < fromIds.length; index += chunkSize) {
     const chunk = fromIds.slice(index, index + chunkSize);
-    const response = await scheduleHubSpotRequest(() =>
-      hubspot.crm.associations.v4.batchApi.getPage(fromType, toType, {
-        inputs: chunk.map((id) => ({ id })),
-      }),
+    const response = await scheduleHubSpotRequest(
+      () =>
+        hubspot.crm.associations.v4.batchApi.getPage(fromType, toType, {
+          inputs: chunk.map((id) => ({ id })),
+        }),
+      `assoc.batch.getPage:${fromType}->${toType}`,
     );
 
     for (const row of response.results ?? []) {

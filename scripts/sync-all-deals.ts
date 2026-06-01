@@ -1,3 +1,26 @@
+/**
+ * Bulk-sync deals into the vault.
+ *
+ * Flags (all optional):
+ *   --pipeline <id>     Sync open deals in a pipeline (else the deal registry).
+ *   --registry-only     Force the registry source even when --pipeline is set.
+ *   --concurrency <n>   Deals synced in parallel (default 4, max 32).
+ *   --timeout <seconds> Per-deal wall-clock cap (default 90s).
+ *   --max <n>           Cap the number of deals processed.
+ *
+ * Recommended full-sweep invocation
+ * ---------------------------------
+ * After the manifest-cache + account-rollup fixes, a heavy deal costs ~34
+ * HubSpot calls / ~30s (was ~1,267 / ~10min), so the old 90s default timeout is
+ * now ample, but a margin keeps a pathological deal from being recorded as a
+ * timeout. Run serially against the shared 8 rps budget to stay well under
+ * HubSpot's per-10s burst ceiling:
+ *
+ *   npm run sync-all-deals -- --concurrency 1 --timeout 600
+ *
+ * Projected cost for the 822-deal sweep at the new rate: ~28k calls
+ * (822 × ~34), comfortably within the remaining daily API budget (~978k).
+ */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {

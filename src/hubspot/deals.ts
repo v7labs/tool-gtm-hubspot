@@ -29,8 +29,9 @@ const DEAL_PROPERTIES = [
 
 export async function getDeal(dealId: string): Promise<HubSpotRecord> {
   const hubspot = getHubSpotClient();
-  const deal = await scheduleHubSpotRequest(() =>
-    hubspot.crm.deals.basicApi.getById(dealId, DEAL_PROPERTIES),
+  const deal = await scheduleHubSpotRequest(
+    () => hubspot.crm.deals.basicApi.getById(dealId, DEAL_PROPERTIES),
+    "deal.getById",
   );
   return {
     id: deal.id,

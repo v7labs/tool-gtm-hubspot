@@ -13,8 +13,9 @@ export async function loadDealPipelines(): Promise<Pipeline[]> {
   }
 
   const hubspot = getHubSpotClient();
-  const response = await scheduleHubSpotRequest(() =>
-    hubspot.crm.pipelines.pipelinesApi.getAll("deals"),
+  const response = await scheduleHubSpotRequest(
+    () => hubspot.crm.pipelines.pipelinesApi.getAll("deals"),
+    "pipelines.getAll",
   );
   pipelineCache = (response.results ?? []).map((pipeline) => ({
     id: pipeline.id,
