@@ -1,5 +1,6 @@
 import { getHubSpotClient } from "./client.js";
 import { getOwnerName } from "./client.js";
+import { scheduleHubSpotRequest } from "./rate-limiter.js";
 
 export type PipelineStage = { id: string; label: string; isClosed: boolean };
 type Pipeline = { id: string; label: string; stages: PipelineStage[] };
@@ -12,7 +13,9 @@ export async function loadDealPipelines(): Promise<Pipeline[]> {
   }
 
   const hubspot = getHubSpotClient();
-  const response = await hubspot.crm.pipelines.pipelinesApi.getAll("deals");
+  const response = await scheduleHubSpotRequest(() =>
+    hubspot.crm.pipelines.pipelinesApi.getAll("deals"),
+  );
   pipelineCache = (response.results ?? []).map((pipeline) => ({
     id: pipeline.id,
     label: pipeline.label,

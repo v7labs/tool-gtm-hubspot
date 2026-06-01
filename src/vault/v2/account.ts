@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import type { DealManifest } from "../../hubspot/manifest.js";
 import { getCompany, listCompanyDealIds } from "../../hubspot/company.js";
 import { buildDealManifest } from "../../hubspot/manifest.js";
+import { getManifestRunCache } from "../../hubspot/manifest-cache.js";
 import { getCompanyName } from "../../hubspot/deals.js";
 import { companyRecordUrl } from "../../hubspot/company.js";
 import { hubspotSourceBanner } from "../learnings.js";
@@ -147,12 +148,15 @@ export async function syncAccountRollup(
   companyId: string,
   seedManifest?: DealManifest,
 ): Promise<{ path: string; dealCount: number }> {
-  const company = await getCompany(companyId);
+  // Company record + sibling deal-id list are seed-independent, so a bulk run
+  // loads them once per company instead of once per deal. Returns a fresh copy
+  // of dealIds so the per-deal seed unshift below never mutates cached state.
+  const { company, dealIds: companyDealIds } = await loadCompanyRollupInputs(companyId);
   const companyName = getCompanyName(company);
   const folder = accountFolderPath(companyId, companyName);
   const syncedAt = new Date().toISOString();
 
-  const dealIds = await listCompanyDealIds(companyId);
+  const dealIds = [...companyDealIds];
   if (seedManifest && !dealIds.includes(seedManifest.deal_id)) {
     dealIds.unshift(seedManifest.deal_id);
   }
@@ -194,4 +198,16 @@ export async function syncAccountRollup(
   );
 
   return { path: saved.path, dealCount: deals.length };
+}
+
+async function loadCompanyRollupInputs(
+  companyId: string,
+): Promise<{ company: Awaited<ReturnType<typeof getCompany>>; dealIds: string[] }> {
+  const load = async () => ({
+    company: await getCompany(companyId),
+    dealIds: await listCompanyDealIds(companyId),
+  });
+
+  const cache = getManifestRunCache();
+  return cache ? cache.getOrLoadCompanyInputs(companyId, load) : load();
 }

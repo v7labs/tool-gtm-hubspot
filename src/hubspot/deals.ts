@@ -1,4 +1,5 @@
 import { getHubSpotClient } from "./client.js";
+import { scheduleHubSpotRequest } from "./rate-limiter.js";
 import type { HubSpotRecord } from "./types.js";
 
 const DEAL_PROPERTIES = [
@@ -28,7 +29,9 @@ const DEAL_PROPERTIES = [
 
 export async function getDeal(dealId: string): Promise<HubSpotRecord> {
   const hubspot = getHubSpotClient();
-  const deal = await hubspot.crm.deals.basicApi.getById(dealId, DEAL_PROPERTIES);
+  const deal = await scheduleHubSpotRequest(() =>
+    hubspot.crm.deals.basicApi.getById(dealId, DEAL_PROPERTIES),
+  );
   return {
     id: deal.id,
     properties: deal.properties ?? {},

@@ -11,6 +11,7 @@ import { getDealActivities } from "./activities.js";
 import { classifyActivities, type ClassifiedActivity } from "./engagements.js";
 import { getDeal, getDealName } from "./deals.js";
 import { batchReadObjects } from "./client.js";
+import { getManifestRunCache } from "./manifest-cache.js";
 import {
   dealRecordUrl,
   resolveOwnerName,
@@ -70,7 +71,36 @@ function pushEdge(
   edges.push({ from, to, labels });
 }
 
-export async function buildDealManifest(
+/**
+ * Build a deal's manifest, deduplicated within a run.
+ *
+ * When a run-scoped cache is active (bulk sweep or a single sync wrapped in
+ * `runWithManifestCache`), each deal's manifest is built AT MOST ONCE — the
+ * account rollup's sibling-manifest rebuilds become cache hits. Outside any run
+ * scope (the default for ad-hoc callers) this is a passthrough to a fresh
+ * build, so behavior is unchanged and no manifest is ever cached across
+ * independent operations.
+ *
+ * Keyed by `dealId`: a deal's manifest content is a deterministic function of
+ * its HubSpot data, so reusing it within one run is safe. The only run-local
+ * variability is `synced_at` (a wall-clock stamp), which the rollup never reads
+ * and which `syncDealMap` re-stamps for the deal's own on-disk output.
+ */
+export function buildDealManifest(
+  dealId: string,
+  options?: { vaultPath?: string },
+): Promise<DealManifest> {
+  const cache = getManifestRunCache();
+  if (cache) {
+    return cache.getOrBuildManifest(dealId, () =>
+      buildDealManifestUncached(dealId, options),
+    );
+  }
+
+  return buildDealManifestUncached(dealId, options);
+}
+
+async function buildDealManifestUncached(
   dealId: string,
   options?: { vaultPath?: string },
 ): Promise<DealManifest> {

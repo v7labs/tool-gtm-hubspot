@@ -46,6 +46,29 @@ export function getHubSpotAccessToken(): string {
   return token;
 }
 
+// Global ceiling (requests/sec) for ALL HubSpot API traffic in this process.
+// HubSpot enforces a per-10s burst limit (~100 req/10s on most plans); the
+// daily budget is rarely the constraint. Even, slightly-conservative spacing at
+// ~8 rps keeps a multi-pipeline sweep under that burst ceiling with headroom.
+// Override via HUBSPOT_MAX_RPS. Clamped to a sane range so a typo can't either
+// disable throttling or stall the process.
+const DEFAULT_HUBSPOT_MAX_RPS = 8;
+const HUBSPOT_MAX_RPS_CEILING = 50;
+
+export function getHubSpotMaxRps(): number {
+  const raw = process.env.HUBSPOT_MAX_RPS;
+  if (!raw) {
+    return DEFAULT_HUBSPOT_MAX_RPS;
+  }
+
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_HUBSPOT_MAX_RPS;
+  }
+
+  return Math.min(parsed, HUBSPOT_MAX_RPS_CEILING);
+}
+
 export function getVaultPath(): string {
   const vaultPath =
     process.env.OBSIDIAN_VAULT_PATH ??

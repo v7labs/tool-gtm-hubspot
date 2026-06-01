@@ -1,4 +1,5 @@
 import { syncDealMap, type SyncDealMapResult } from "./sync.js";
+import { runWithManifestCache } from "../hubspot/manifest-cache.js";
 
 export const DEFAULT_BULK_CONCURRENCY = 4;
 export const DEFAULT_PER_DEAL_TIMEOUT_MS = 90_000;
@@ -157,7 +158,13 @@ export async function syncDealsBulk(
   }
 
   const workerCount = Math.min(concurrency, total);
-  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  // One shared manifest/company cache spans the whole sweep, so a company's
+  // sibling manifests and rollup inputs are built once across all workers
+  // (not once per deal). syncDealMap joins this ambient cache rather than
+  // opening its own.
+  await runWithManifestCache(() =>
+    Promise.all(Array.from({ length: workerCount }, () => worker())),
+  );
 
   return {
     total,

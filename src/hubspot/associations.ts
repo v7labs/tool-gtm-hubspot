@@ -1,4 +1,5 @@
 import { getHubSpotClient } from "./client.js";
+import { scheduleHubSpotRequest } from "./rate-limiter.js";
 
 export type AssociationSpec = {
   typeId: number;
@@ -33,9 +34,8 @@ export async function getAssociationSchema(
   }
 
   const hubspot = getHubSpotClient();
-  const response = await hubspot.crm.associations.v4.schema.definitionsApi.getAll(
-    fromType,
-    toType,
+  const response = await scheduleHubSpotRequest(() =>
+    hubspot.crm.associations.v4.schema.definitionsApi.getAll(fromType, toType),
   );
 
   const entries: AssociationSchemaEntry[] = (response.results ?? []).map((spec) => ({
@@ -87,12 +87,14 @@ export async function getAssociations(
   let after: string | undefined;
 
   do {
-    const page = await hubspot.crm.associations.v4.basicApi.getPage(
-      fromType,
-      fromId,
-      toType,
-      after,
-      500,
+    const page = await scheduleHubSpotRequest(() =>
+      hubspot.crm.associations.v4.basicApi.getPage(
+        fromType,
+        fromId,
+        toType,
+        after,
+        500,
+      ),
     );
 
     for (const result of page.results ?? []) {
@@ -136,9 +138,11 @@ export async function batchGetAssociations(
 
   for (let index = 0; index < fromIds.length; index += chunkSize) {
     const chunk = fromIds.slice(index, index + chunkSize);
-    const response = await hubspot.crm.associations.v4.batchApi.getPage(fromType, toType, {
-      inputs: chunk.map((id) => ({ id })),
-    });
+    const response = await scheduleHubSpotRequest(() =>
+      hubspot.crm.associations.v4.batchApi.getPage(fromType, toType, {
+        inputs: chunk.map((id) => ({ id })),
+      }),
+    );
 
     for (const row of response.results ?? []) {
       const fromId = row._from?.id;

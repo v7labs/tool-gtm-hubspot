@@ -1,4 +1,5 @@
 import { getHubSpotClient } from "./client.js";
+import { scheduleHubSpotRequest } from "./rate-limiter.js";
 import { loadDealPipelines, resolvePipelineStage } from "./pipelines.js";
 import type { PipelineStage } from "./pipelines.js";
 
@@ -85,10 +86,12 @@ function isValidTimestamp(timestamp: string | Date): boolean {
 export async function getDealStageHistory(dealId: string): Promise<DealStageHistory> {
   const hubspot = getHubSpotClient();
 
-  const deal = await hubspot.crm.deals.basicApi.getById(
-    dealId,
-    STAGE_HISTORY_PROPERTIES,
-    STAGE_HISTORY_WITH_HISTORY,
+  const deal = await scheduleHubSpotRequest(() =>
+    hubspot.crm.deals.basicApi.getById(
+      dealId,
+      STAGE_HISTORY_PROPERTIES,
+      STAGE_HISTORY_WITH_HISTORY,
+    ),
   );
 
   const properties = deal.properties ?? {};

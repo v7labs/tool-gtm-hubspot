@@ -1,4 +1,5 @@
 import { getHubSpotClient } from "./client.js";
+import { scheduleHubSpotRequest } from "./rate-limiter.js";
 import { loadDealPipelines } from "./pipelines.js";
 import { FilterOperatorEnum } from "@hubspot/api-client/lib/codegen/crm/deals/models/Filter.js";
 
@@ -60,27 +61,29 @@ export async function listOpenDealIdsInPipeline(
       break;
     }
 
-    const response = await hubspot.crm.deals.searchApi.doSearch({
-      filterGroups: [
-        {
-          filters: [
-            {
-              propertyName: "pipeline",
-              operator: FilterOperatorEnum.Eq,
-              value: pipelineId,
-            },
-            {
-              propertyName: "dealstage",
-              operator: FilterOperatorEnum.In,
-              values: openStageIds,
-            },
-          ],
-        },
-      ],
-      properties: ["dealname", "dealstage"],
-      limit: Math.min(SEARCH_PAGE_SIZE, remaining),
-      after,
-    });
+    const response = await scheduleHubSpotRequest(() =>
+      hubspot.crm.deals.searchApi.doSearch({
+        filterGroups: [
+          {
+            filters: [
+              {
+                propertyName: "pipeline",
+                operator: FilterOperatorEnum.Eq,
+                value: pipelineId,
+              },
+              {
+                propertyName: "dealstage",
+                operator: FilterOperatorEnum.In,
+                values: openStageIds,
+              },
+            ],
+          },
+        ],
+        properties: ["dealname", "dealstage"],
+        limit: Math.min(SEARCH_PAGE_SIZE, remaining),
+        after,
+      }),
+    );
 
     for (const deal of response.results ?? []) {
       ids.push(deal.id);

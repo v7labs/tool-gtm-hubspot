@@ -3,6 +3,7 @@ import type { HubSpotRecord } from "./types.js";
 import { Client } from "@hubspot/api-client";
 
 import { getHubSpotAccessToken } from "../config.js";
+import { scheduleHubSpotRequest } from "./rate-limiter.js";
 
 export {
   getAssociatedIds,
@@ -77,7 +78,7 @@ export async function batchReadObjects(
   const records: HubSpotRecord[] = [];
   for (let index = 0; index < ids.length; index += chunkSize) {
     const inputs = ids.slice(index, index + chunkSize).map((id) => ({ id }));
-    const response = await readChunk(inputs);
+    const response = await scheduleHubSpotRequest(() => readChunk(inputs));
     records.push(...(response.results ?? []).map(toHubSpotRecord));
   }
 
@@ -105,18 +106,35 @@ function toHubSpotRecord(object: SimplePublicObject): HubSpotRecord {
   };
 }
 
+// Owner id → resolved display name. Owner names are stable within (and across)
+// a sync, but getOwnerName is called once per activity, so without this memo a
+// 94-activity deal fires ~94 identical owner lookups — a major amplifier of the
+// per-10s burst the throttler is fighting. Collapses to one call per distinct
+// owner. Module-scoped to mirror the existing schema/pipeline caches; only
+// SUCCESSFUL resolutions are cached so a transient (e.g. 429) failure is retried
+// rather than poisoning the cache with a spurious null.
+const ownerNameCache = new Map<string, string | null>();
+
 export async function getOwnerName(ownerId: string | null | undefined): Promise<string | null> {
   if (!ownerId) {
     return null;
   }
 
+  if (ownerNameCache.has(ownerId)) {
+    return ownerNameCache.get(ownerId) ?? null;
+  }
+
   try {
     const hubspot = getHubSpotClient();
-    const owner = await hubspot.crm.owners.ownersApi.getById(Number(ownerId));
+    const owner = await scheduleHubSpotRequest(() =>
+      hubspot.crm.owners.ownersApi.getById(Number(ownerId)),
+    );
     const first = owner.firstName ?? "";
     const last = owner.lastName ?? "";
     const full = `${first} ${last}`.trim();
-    return full || owner.email || null;
+    const resolved = full || owner.email || null;
+    ownerNameCache.set(ownerId, resolved);
+    return resolved;
   } catch {
     return null;
   }

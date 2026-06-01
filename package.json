@@ -13,7 +13,8 @@
     "sync-all-deals": "tsx scripts/sync-all-deals.ts",
     "migrate-deal-folder": "tsx scripts/migrate-deal-folder.ts",
     "smoke-deal-vault": "tsx scripts/smoke-deal-vault.ts",
-    "discover-company": "tsx scripts/discover-company.ts"
+    "discover-company": "tsx scripts/discover-company.ts",
+    "check:throttle": "tsx scripts/throttle-cache-check.ts"
   },
   "keywords": ["mcp", "hubspot", "obsidian", "gtm"],
   "license": "ISC",

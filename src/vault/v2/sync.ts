@@ -48,6 +48,7 @@ import {
 } from "./render.js";
 import { ensureHermesLearningsNoteV2 } from "../learnings-v2.js";
 import { syncAccountRollup } from "./account.js";
+import { runWithManifestCache } from "../../hubspot/manifest-cache.js";
 
 export type SyncDealMapResult = {
   dealId: string;
@@ -82,11 +83,27 @@ function absolutePaths(vaultPath: string, relativePaths: string[]): string[] {
   return relativePaths.map((relativePath) => join(vaultPath, relativePath));
 }
 
-export async function syncDealMap(
+export function syncDealMap(
   vaultPath: string,
   dealId: string,
 ): Promise<SyncDealMapResult> {
-  const manifest = await buildDealManifest(dealId, { vaultPath });
+  // Establish (or join, when called from a bulk sweep) a run-scoped manifest
+  // cache so sibling-deal manifests built by the account rollup are reused
+  // rather than rebuilt per deal.
+  return runWithManifestCache(() => syncDealMapInner(vaultPath, dealId));
+}
+
+async function syncDealMapInner(
+  vaultPath: string,
+  dealId: string,
+): Promise<SyncDealMapResult> {
+  const baseManifest = await buildDealManifest(dealId, { vaultPath });
+  // Re-stamp `synced_at` so this deal's own on-disk files record the instant of
+  // ITS sync — matching pre-cache behavior — even when the structural manifest
+  // was first built earlier in the run (as another deal's sibling). The rollup
+  // never reads `synced_at`, and the cached copy is left untouched; this shallow
+  // clone shares the now-immutable arrays, which downstream code only reads.
+  const manifest = { ...baseManifest, synced_at: new Date().toISOString() };
   const folder = dealFolderPathV2(dealId, manifest.deal_name);
   const manifestRelative = `${folder}/${manifestFileName()}`;
 
