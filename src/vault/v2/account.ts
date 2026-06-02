@@ -19,8 +19,8 @@ import {
 import { getCompanyName, getDealName } from "../../hubspot/deals.js";
 import { companyRecordUrl } from "../../hubspot/company.js";
 import { hubspotSourceBanner } from "../learnings.js";
-import { sanitizeFilename, upsertVaultNote, wikilink } from "../writer.js";
-import { dealFolderPathV2 } from "./paths.js";
+import { upsertVaultNote, wikilink } from "../writer.js";
+import { accountFolderPathV2, dealFolderPathV2 } from "./paths.js";
 import { briefNoteTitle } from "./render.js";
 
 // Only the fields the account rollup table renders, plus the inputs
@@ -70,8 +70,9 @@ async function readExistingBaseEmbeds(
 }
 
 export function accountFolderPath(companyId: string, companyName: string): string {
-  const slug = sanitizeFilename(companyName).slice(0, 60);
-  return `GTM/Accounts/${companyId} ${slug}`;
+  // Delegate to the shared path helper so the account writer and the
+  // company-hub backlinks in render.ts can never drift on slug logic.
+  return accountFolderPathV2(companyId, companyName);
 }
 
 export function accountFileName(): string {

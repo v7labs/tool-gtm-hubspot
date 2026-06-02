@@ -16,6 +16,7 @@ import {
   sortActivitiesChronological,
 } from "../timeline.js";
 import { formatDatePrefix, wikilink } from "../writer.js";
+import { accountHubWikilink } from "./paths.js";
 
 const BRIEF_TITLE = "Brief";
 const DEAL_TITLE = "Deal";
@@ -52,6 +53,31 @@ export function entityCompanyTitle(company: AssociatedRecord): string {
 
 export function entityContactTitle(contact: AssociatedRecord): string {
   return getContactName(contact);
+}
+
+/**
+ * Path-qualified wikilink to the deal's primary-company Account note — the
+ * company-nucleus hub. Deal-scoped entity/contact notes carry this so Obsidian
+ * clusters everything that belongs to a company around its Account note.
+ *
+ * The primary company is the nucleus, and its Account note is the one the
+ * account rollup guarantees on disk, so associated (non-primary) companies on
+ * the deal also pin to the primary hub rather than to a never-synced account
+ * (which would dangle). Returns null only when the deal has no primary company.
+ */
+function accountHubLink(manifest: DealManifest): string | null {
+  const primaryId = manifest.primary_company_id;
+  if (!primaryId) {
+    return null;
+  }
+  const primaryCompany =
+    manifest.companies.find((company) => company.isPrimary) ??
+    manifest.companies.find((company) => company.id === primaryId) ??
+    manifest.companies[0];
+  if (!primaryCompany) {
+    return null;
+  }
+  return accountHubWikilink(primaryId, getCompanyName(primaryCompany));
 }
 
 export function renderBriefV2(
@@ -267,6 +293,15 @@ export function renderCompanyEntityV2(
     ? "Primary company"
     : company.associationLabels.join(", ") || "Associated company";
 
+  const hubLink = accountHubLink(manifest);
+  const accountBlock = hubLink
+    ? `## Account
+
+- ${hubLink}
+
+`
+    : "";
+
   return `---
 type: company
 source: hubspot
@@ -289,7 +324,7 @@ ${hubspotSourceBanner()}
 | Industry | ${company.properties.industry ?? ""} |
 | Association | ${role} |
 
-## Deal
+${accountBlock}## Deal
 
 - [[${BRIEF_TITLE}]] · [[${DEAL_TITLE}]]
 `;
@@ -301,6 +336,15 @@ export function renderContactEntityV2(
   relatedTitles: string[],
 ): string {
   const name = getContactName(contact);
+
+  const hubLink = accountHubLink(manifest);
+  const companyBlock = hubLink
+    ? `## Company
+
+- ${hubLink}
+
+`
+    : "";
 
   return `---
 type: contact
@@ -323,7 +367,7 @@ ${hubspotSourceBanner()}
 | Title | ${contact.properties.jobtitle ?? ""} |
 | Deal role | ${contact.associationLabels.join(", ") || "Deal contact"} |
 
-## Deal
+${companyBlock}## Deal
 
 - [[${BRIEF_TITLE}]] · [[${DEAL_TITLE}]]
 
