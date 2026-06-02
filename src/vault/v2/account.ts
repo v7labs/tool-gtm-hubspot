@@ -23,7 +23,7 @@ import { upsertVaultNote, wikilink } from "../writer.js";
 import {
   accountGist,
   composeBriefCallout,
-  readPreservedHermesBrief,
+  extractHermesBrief,
   summaryFrontmatterValue,
 } from "../summary.js";
 import { accountFolderPathV2, dealFolderPathV2 } from "./paths.js";
@@ -59,19 +59,26 @@ export function extractBaseEmbeds(content: string): string[] {
   return [...new Set(matches)];
 }
 
-async function readExistingBaseEmbeds(
+/**
+ * Read an existing Account.md once. Both preservation passes (Bases embeds and
+ * the Hermes brief) derive from the SAME note, so the rollup reads the file a
+ * single time and runs the pure extractors over the in-memory string. Missing
+ * or unreadable file → empty string, which both extractors treat as "nothing to
+ * preserve" (`extractBaseEmbeds` → [], `extractHermesBrief` → null), matching
+ * the prior per-extractor fallbacks exactly.
+ */
+async function readExistingAccountNote(
   vaultPath: string,
   relativePath: string,
-): Promise<string[]> {
+): Promise<string> {
   const absolute = join(vaultPath, relativePath);
   if (!existsSync(absolute)) {
-    return [];
+    return "";
   }
   try {
-    const content = await readFile(absolute, "utf8");
-    return extractBaseEmbeds(content);
+    return await readFile(absolute, "utf8");
   } catch {
-    return [];
+    return "";
   }
 }
 
@@ -210,8 +217,11 @@ export async function syncAccountRollup(
 
   const relativePath = `${folder}/${accountFileName()}`;
   await mkdir(join(vaultPath, folder), { recursive: true });
-  const baseEmbeds = await readExistingBaseEmbeds(vaultPath, relativePath);
-  const preservedBrief = await readPreservedHermesBrief(vaultPath, relativePath);
+  // One read of the existing note feeds both preservation passes (was two
+  // separate readFile calls over the same Account.md).
+  const existingNote = await readExistingAccountNote(vaultPath, relativePath);
+  const baseEmbeds = extractBaseEmbeds(existingNote);
+  const preservedBrief = extractHermesBrief(existingNote);
   const saved = await upsertVaultNote(
     vaultPath,
     relativePath,

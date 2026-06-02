@@ -26,8 +26,10 @@ export const HERMES_BRIEF_START = "%%gtm:brief:hermes:start%%";
 export const HERMES_BRIEF_END = "%%gtm:brief:hermes:end%%";
 
 // Default narrative shown until Hermes/GBrain writes one. Kept as a `>`-quoted
-// callout line so the placeholder sits inside the `[!summary]` block.
-const DEFAULT_HERMES_INNER = "> _Narrative brief — pending Hermes/GBrain enrichment._";
+// callout line so the placeholder sits inside the `[!summary]` block. Exported
+// because it is part of the load-bearing cross-system wire contract (see the
+// golden contract test) — Hermes/GBrain keys off this exact byte string.
+export const DEFAULT_HERMES_INNER = "> _Narrative brief — pending Hermes/GBrain enrichment._";
 
 const HERMES_REGION_PATTERN = new RegExp(
   `${escapeRegExp(HERMES_BRIEF_START)}\\n([\\s\\S]*?)\\n>?\\s*${escapeRegExp(
@@ -56,7 +58,12 @@ export function extractHermesBrief(content: string): string | null {
     return null;
   }
   const inner = match[1].replace(/\s+$/, "");
-  if (inner.trim() === DEFAULT_HERMES_INNER.trim()) {
+  // A blank captured region (Hermes cleared it, or only whitespace remains) is
+  // "no narrative", NOT an empty narrative — returning "" here would feed `"" `
+  // into `preservedInner ?? DEFAULT_HERMES_INNER` and permanently strip the
+  // placeholder. Only a real narrative is ever returned non-null.
+  const trimmed = inner.trim();
+  if (trimmed === "" || trimmed === DEFAULT_HERMES_INNER.trim()) {
     return null;
   }
   return inner;
@@ -86,9 +93,14 @@ export function composeBriefCallout(
   preservedInner: string | null,
 ): string {
   const inner = preservedInner ?? DEFAULT_HERMES_INNER;
+  // The gist is interpolated raw into a `>`-quoted callout line. A newline or
+  // control char in a CRM-derived value (company/contact/deal name, title)
+  // would break the `[!summary]` block and push the Hermes markers outside it.
+  // Normalize to a single line here so the invariant lives with the renderer.
+  const safeGist = gist.replace(/\s+/g, " ").trim();
   return [
     "> [!summary] Brief",
-    `> ${gist}`,
+    `> ${safeGist}`,
     ">",
     "> %%Hermes/GBrain enrichment hook — write the narrative brief between the markers below; it survives re-sync. The gist above is deterministic and refreshes each sync.%%",
     `> ${HERMES_BRIEF_START}`,
