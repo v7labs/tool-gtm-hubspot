@@ -20,6 +20,12 @@ import { getCompanyName, getDealName } from "../../hubspot/deals.js";
 import { companyRecordUrl } from "../../hubspot/company.js";
 import { hubspotSourceBanner } from "../learnings.js";
 import { upsertVaultNote, wikilink } from "../writer.js";
+import {
+  accountGist,
+  composeBriefCallout,
+  readPreservedHermesBrief,
+  summaryFrontmatterValue,
+} from "../summary.js";
 import { accountFolderPathV2, dealFolderPathV2 } from "./paths.js";
 import { briefNoteTitle } from "./render.js";
 
@@ -97,11 +103,23 @@ export function renderAccountMd(params: {
   syncedAt: string;
   deals: AccountDealRow[];
   baseEmbeds?: string[];
+  preservedBrief?: string | null;
 }): string {
   const tags = ["gtm", "hubspot", "account"];
   if (params.companyId === CAPITAL_DYNAMICS_COMPANY_ID) {
     tags.push("gtm/capital-dynamics");
   }
+
+  const gist = accountGist({
+    companyName: params.companyName,
+    companyDomain: params.companyDomain,
+    deals: params.deals.map((deal) => ({
+      motion: deal.motion,
+      amount: deal.amount,
+      stageLabel: deal.stageLabel,
+    })),
+  });
+  const briefCallout = composeBriefCallout(gist, params.preservedBrief ?? null);
 
   // Preserve any Bases embeds the vault already carries. Seed the pilot embed
   // for Capital Dynamics so the view persists even on a first/clean re-sync.
@@ -138,6 +156,7 @@ type: account
 source: hubspot
 hubspot_id: "${params.companyId}"
 aliases: ["${params.companyName.replace(/"/g, '\\"')}"]
+summary: "${summaryFrontmatterValue(gist)}"
 synced_at: ${params.syncedAt}
 tags: [${tags.join(", ")}]
 ---
@@ -145,6 +164,8 @@ tags: [${tags.join(", ")}]
 # ${params.companyName}
 
 ${hubspotSourceBanner()}
+
+${briefCallout}
 
 > [!important] Account snapshot
 > | Domain | Deals | Pilot |
@@ -190,6 +211,7 @@ export async function syncAccountRollup(
   const relativePath = `${folder}/${accountFileName()}`;
   await mkdir(join(vaultPath, folder), { recursive: true });
   const baseEmbeds = await readExistingBaseEmbeds(vaultPath, relativePath);
+  const preservedBrief = await readPreservedHermesBrief(vaultPath, relativePath);
   const saved = await upsertVaultNote(
     vaultPath,
     relativePath,
@@ -201,6 +223,7 @@ export async function syncAccountRollup(
       syncedAt,
       deals,
       baseEmbeds,
+      preservedBrief,
     }),
     companyId,
     { dedupScope: folder },

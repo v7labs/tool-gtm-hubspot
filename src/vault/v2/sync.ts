@@ -47,6 +47,7 @@ import {
   learningsNoteTitle,
 } from "./render.js";
 import { ensureHermesLearningsNoteV2 } from "../learnings-v2.js";
+import { readPreservedHermesBrief } from "../summary.js";
 import { syncAccountRollup } from "./account.js";
 import { runWithManifestCache } from "../../hubspot/manifest-cache.js";
 
@@ -245,10 +246,11 @@ async function syncDealMapInner(
   const companyPaths: string[] = [];
   for (const company of manifest.companies) {
     const relative = `${folder}/${entityCompanyPath(company.id)}`;
+    const preservedBrief = await readPreservedHermesBrief(vaultPath, relative);
     const saved = await upsertVaultNote(
       vaultPath,
       relative,
-      renderCompanyEntityV2(company, manifest),
+      renderCompanyEntityV2(company, manifest, preservedBrief),
       company.id,
       { dedupScope: folder },
     );
@@ -264,10 +266,11 @@ async function syncDealMapInner(
       titleByPath,
     );
     const relative = `${folder}/${entityContactPath(contact.id)}`;
+    const preservedBrief = await readPreservedHermesBrief(vaultPath, relative);
     const saved = await upsertVaultNote(
       vaultPath,
       relative,
-      renderContactEntityV2(contact, manifest, relatedTitles),
+      renderContactEntityV2(contact, manifest, relatedTitles, preservedBrief),
       contact.id,
       { dedupScope: folder },
     );
@@ -285,10 +288,11 @@ async function syncDealMapInner(
       titleByPath,
     );
     const relative = `${folder}/${entityContactPath(contact.id)}`;
+    const preservedBrief = await readPreservedHermesBrief(vaultPath, relative);
     const saved = await upsertVaultNote(
       vaultPath,
       relative,
-      renderContactEntityV2(contact, manifest, relatedTitles),
+      renderContactEntityV2(contact, manifest, relatedTitles, preservedBrief),
       contact.id,
       { dedupScope: folder },
     );
@@ -311,11 +315,12 @@ async function syncDealMapInner(
   );
 
   const briefRelative = `${folder}/${briefFileName()}`;
+  const preservedBrief = await readPreservedHermesBrief(vaultPath, briefRelative);
   const briefPath = (
     await upsertVaultNote(
       vaultPath,
       briefRelative,
-      renderBriefV2(manifest, timeline, titleByPath),
+      renderBriefV2(manifest, timeline, titleByPath, preservedBrief),
       `brief-${dealId}`,
       { dedupScope: folder },
     )

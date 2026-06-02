@@ -11,6 +11,13 @@ import {
 import { buildThirtySecondStory } from "../brief.js";
 import { hubspotSourceBanner } from "../learnings.js";
 import {
+  composeBriefCallout,
+  companyEntityGist,
+  contactEntityGist,
+  dealBriefGist,
+  summaryFrontmatterValue,
+} from "../summary.js";
+import {
   extractLatestEmailContent,
   oneLineSummary,
   sortActivitiesChronological,
@@ -84,6 +91,7 @@ export function renderBriefV2(
   manifest: DealManifest,
   timeline: DealTimelineEntry[],
   titleByPath: Map<string, string>,
+  preservedBrief?: string | null,
 ): string {
   const primaryCompany =
     manifest.companies.find((company) => company.isPrimary) ?? manifest.companies[0];
@@ -102,6 +110,9 @@ export function renderBriefV2(
   });
 
   const story = buildThirtySecondStory(substantiveTimeline, primaryCompany ? getCompanyName(primaryCompany) : manifest.deal_name);
+
+  const briefGist = dealBriefGist(manifest, substantiveTimeline.length);
+  const briefCallout = composeBriefCallout(briefGist, preservedBrief ?? null);
 
   const flowBullets = substantiveTimeline
     .slice(0, 6)
@@ -136,6 +147,7 @@ motion: ${manifest.motion}
 primary_company_id: "${primaryCompanyId}"
 pipeline_label: "${yamlQuote(manifest.pipeline?.label ?? "")}"
 stage_label: "${yamlQuote(manifest.stage?.label ?? "")}"
+summary: "${summaryFrontmatterValue(briefGist)}"
 deal_note: "[[${DEAL_TITLE}]]"
 hermes_learnings: "[[${LEARNINGS_TITLE}]]"
 synced_at: ${manifest.synced_at}
@@ -145,6 +157,8 @@ tags: [${dealTags(manifest, ["deal-brief"])}]
 # ${manifest.deal_name} — Deal Brief
 
 ${hubspotSourceBanner()}
+
+${briefCallout}
 
 > **CRM facts.** Hermes: [[${LEARNINGS_TITLE}]] · Index: [[${DEAL_TITLE}]]
 
@@ -287,11 +301,15 @@ function renderAssociationBlockPlain(manifest: DealManifest): string {
 export function renderCompanyEntityV2(
   company: AssociatedRecord,
   manifest: DealManifest,
+  preservedBrief?: string | null,
 ): string {
   const name = getCompanyName(company);
   const role = company.isPrimary
     ? "Primary company"
     : company.associationLabels.join(", ") || "Associated company";
+
+  const gist = companyEntityGist(company, manifest);
+  const briefCallout = composeBriefCallout(gist, preservedBrief ?? null);
 
   const hubLink = accountHubLink(manifest);
   const accountBlock = hubLink
@@ -310,6 +328,7 @@ aliases: ["${escapeYamlAlias(name)}"]
 association_labels: [${company.associationLabels.map((label) => `"${label}"`).join(", ")}]
 is_primary: ${company.isPrimary ? "true" : "false"}
 deal_hubspot_id: "${manifest.deal_id}"
+summary: "${summaryFrontmatterValue(gist)}"
 synced_at: ${manifest.synced_at}
 tags: [${dealTags(manifest, ["company"])}]
 ---
@@ -317,6 +336,8 @@ tags: [${dealTags(manifest, ["company"])}]
 # ${name}
 
 ${hubspotSourceBanner()}
+
+${briefCallout}
 
 | Field | Value |
 |-------|-------|
@@ -334,8 +355,12 @@ export function renderContactEntityV2(
   contact: AssociatedRecord,
   manifest: DealManifest,
   relatedTitles: string[],
+  preservedBrief?: string | null,
 ): string {
   const name = getContactName(contact);
+
+  const gist = contactEntityGist(contact, manifest);
+  const briefCallout = composeBriefCallout(gist, preservedBrief ?? null);
 
   const hubLink = accountHubLink(manifest);
   const companyBlock = hubLink
@@ -353,6 +378,7 @@ hubspot_id: "${contact.id}"
 aliases: ["${escapeYamlAlias(name)}"]
 association_labels: [${contact.associationLabels.map((label) => `"${label}"`).join(", ")}]
 deal_hubspot_id: "${manifest.deal_id}"
+summary: "${summaryFrontmatterValue(gist)}"
 synced_at: ${manifest.synced_at}
 tags: [${dealTags(manifest, ["contact"])}]
 ---
@@ -360,6 +386,8 @@ tags: [${dealTags(manifest, ["contact"])}]
 # ${name}
 
 ${hubspotSourceBanner()}
+
+${briefCallout}
 
 | Field | Value |
 |-------|-------|
