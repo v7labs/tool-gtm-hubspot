@@ -29,15 +29,11 @@ import {
   briefFileName,
   dealIndexFileName,
   manifestFileName,
-  entityCompanyPath,
-  entityContactPath,
   engagementPath,
 } from "./paths.js";
 import {
   renderBriefV2,
   renderDealIndexV2,
-  renderCompanyEntityV2,
-  renderContactEntityV2,
   renderActivityV2,
   renderThreadV2,
   buildSubstantiveTimelineActivities,
@@ -46,9 +42,10 @@ import {
   briefNoteTitle,
   learningsNoteTitle,
 } from "./render.js";
+import { upsertContactHub } from "./contact-hub.js";
 import { ensureHermesLearningsNoteV2 } from "../learnings-v2.js";
 import { readPreservedHermesBrief } from "../summary.js";
-import { syncAccountRollup } from "./account.js";
+import { resolveAccountNoteBasename, syncAccountRollup } from "./account.js";
 import { runWithManifestCache } from "../../hubspot/manifest-cache.js";
 
 export type SyncDealMapResult = {
@@ -108,6 +105,22 @@ async function syncDealMapInner(
   const folder = dealFolderPathV2(dealId, manifest.deal_name);
   const manifestRelative = `${folder}/${manifestFileName()}`;
 
+  // Resolve the primary company's EXISTING account-note basename once so every
+  // hub link (Brief, Deal, contacts) and the rollup writer use the same on-disk
+  // name — a re-sync therefore never renames a live account / orphans its links.
+  const primaryCompanyForHub =
+    manifest.companies.find((company) => company.isPrimary) ??
+    manifest.companies.find((company) => company.id === manifest.primary_company_id) ??
+    manifest.companies[0];
+  const accountNoteBasename =
+    manifest.primary_company_id && primaryCompanyForHub
+      ? await resolveAccountNoteBasename(
+          vaultPath,
+          manifest.primary_company_id,
+          entityCompanyTitle(primaryCompanyForHub),
+        )
+      : undefined;
+
   await mkdir(join(vaultPath, folder), { recursive: true });
   await writeFile(
     join(vaultPath, manifestRelative),
@@ -139,12 +152,13 @@ async function syncDealMapInner(
     (entry) => !mergedEmailIdSet.has(entry.activity.id),
   );
 
+  // Company/contact ids are deliberately OMITTED: per-deal `entities/*` stubs are
+  // no longer written (contacts live in canonical `GTM/Contacts/` hubs, companies
+  // in their `Account` hub), so any leftover stub from a prior sync is stale and
+  // is cleaned by removeStaleDealNotes below.
   const keptHubspotIds = new Set<string>([
     manifest.deal_id,
     `brief-${dealId}`,
-    ...manifest.companies.map((company) => company.id),
-    ...manifest.contacts.map((contact) => contact.id),
-    ...manifest.engagement_contacts.map((contact) => contact.id),
     ...substantive.map((activity) => activity.id),
     ...calendar.map((activity) => activity.id),
   ]);
@@ -243,61 +257,23 @@ async function syncDealMapInner(
     titleByPath.set(saved.path, title);
   }
 
+  // Companies are NOT written as per-deal stubs anymore — the canonical company
+  // hub is its `Account` note (created by the account rollup below) and the
+  // Brief links to it. The CRM associations table still names every company.
   const companyPaths: string[] = [];
   for (const company of manifest.companies) {
-    const relative = `${folder}/${entityCompanyPath(company.id)}`;
-    const preservedBrief = await readPreservedHermesBrief(vaultPath, relative);
-    const saved = await upsertVaultNote(
-      vaultPath,
-      relative,
-      renderCompanyEntityV2(company, manifest, preservedBrief),
-      company.id,
-      { dedupScope: folder },
-    );
-    companyPaths.push(saved.path);
-    titleByPath.set(saved.path, entityCompanyTitle(company));
+    titleByPath.set(`company:${company.id}`, entityCompanyTitle(company));
   }
 
+  // Contacts are consolidated into ONE canonical hub per person at
+  // `GTM/Contacts/{id} {slug}.md`, accumulating this deal's Brief + Account
+  // links. Engagement participants get a hub too so "who we talked to" stays in
+  // the graph as people linked to the account — without per-deal duplicate stubs.
   const contactPaths: string[] = [];
-  for (const contact of manifest.contacts) {
-    const relatedTitles = relatedActivityTitlesForContact(
-      contact.id,
-      timeline,
-      titleByPath,
-    );
-    const relative = `${folder}/${entityContactPath(contact.id)}`;
-    const preservedBrief = await readPreservedHermesBrief(vaultPath, relative);
-    const saved = await upsertVaultNote(
-      vaultPath,
-      relative,
-      renderContactEntityV2(contact, manifest, relatedTitles, preservedBrief),
-      contact.id,
-      { dedupScope: folder },
-    );
-    contactPaths.push(saved.path);
-    titleByPath.set(saved.path, entityContactTitle(contact));
-  }
-
-  // Engagement participants (meeting/email/call contacts not directly tied to
-  // the deal). Rendered as entity pages so the link graph can resolve
-  // activity→contact edges; not added to the deal's direct-contact glance.
-  for (const contact of manifest.engagement_contacts) {
-    const relatedTitles = relatedActivityTitlesForContact(
-      contact.id,
-      timeline,
-      titleByPath,
-    );
-    const relative = `${folder}/${entityContactPath(contact.id)}`;
-    const preservedBrief = await readPreservedHermesBrief(vaultPath, relative);
-    const saved = await upsertVaultNote(
-      vaultPath,
-      relative,
-      renderContactEntityV2(contact, manifest, relatedTitles, preservedBrief),
-      contact.id,
-      { dedupScope: folder },
-    );
-    contactPaths.push(saved.path);
-    titleByPath.set(saved.path, entityContactTitle(contact));
+  for (const contact of [...manifest.contacts, ...manifest.engagement_contacts]) {
+    const hubPath = await upsertContactHub(vaultPath, contact, manifest, accountNoteBasename);
+    contactPaths.push(hubPath);
+    titleByPath.set(`contact:${contact.id}`, entityContactTitle(contact));
   }
 
   for (const entry of timeline) {
@@ -314,13 +290,13 @@ async function syncDealMapInner(
     manifest.deal_name,
   );
 
-  const briefRelative = `${folder}/${briefFileName()}`;
+  const briefRelative = `${folder}/${briefFileName(manifest.deal_name)}`;
   const preservedBrief = await readPreservedHermesBrief(vaultPath, briefRelative);
   const briefPath = (
     await upsertVaultNote(
       vaultPath,
       briefRelative,
-      renderBriefV2(manifest, timeline, titleByPath, preservedBrief),
+      renderBriefV2(manifest, timeline, titleByPath, preservedBrief, accountNoteBasename),
       `brief-${dealId}`,
       { dedupScope: folder },
     )
@@ -331,7 +307,7 @@ async function syncDealMapInner(
     await upsertVaultNote(
       vaultPath,
       dealRelative,
-      renderDealIndexV2(manifest, timeline, calendar, titleByPath),
+      renderDealIndexV2(manifest, timeline, calendar, titleByPath, accountNoteBasename),
       manifest.deal_id,
       { dedupScope: folder },
     )
@@ -461,6 +437,8 @@ function renderCalendarActivityV2(
 ): string {
   const title = activity.subject ?? activityTypeLabel(activity.type);
 
+  // No `deal_brief`/`[[Brief]]` backlink — calendar items are records indexed by
+  // Deal.md tables + `deal_hubspot_id`, kept out of the graph.
   return `---
 type: activity
 source: hubspot
@@ -468,7 +446,6 @@ activity_type: ${activityTypeLabel(activity.type)}
 engagement_class: calendar
 hubspot_id: "${activity.id}"
 deal_hubspot_id: "${manifest.deal_id}"
-deal_brief: "[[${briefNoteTitle()}]]"
 occurred_at: ${activity.timestamp ?? ""}
 synced_at: ${manifest.synced_at}
 tags: [gtm, hubspot, activity, calendar]
@@ -476,7 +453,7 @@ tags: [gtm, hubspot, activity, calendar]
 
 # ${title}
 
-> Calendar/system engagement — listed in [[${briefNoteTitle()}]] deal index only.
+> Calendar/system engagement — record only; listed in the deal's \`Deal.md\` index table.
 
 | Field | Value |
 |-------|-------|

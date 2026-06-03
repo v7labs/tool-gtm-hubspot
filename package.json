@@ -12,6 +12,7 @@
     "test": "node --import tsx --test src/vault/summary.test.ts",
     "sync-deal-map": "tsx scripts/sync-deal-map.ts",
     "sync-all-deals": "tsx scripts/sync-all-deals.ts",
+    "resync-existing-deals": "tsx scripts/resync-existing-vault-deals.ts",
     "migrate-deal-folder": "tsx scripts/migrate-deal-folder.ts",
     "smoke-deal-vault": "tsx scripts/smoke-deal-vault.ts",
     "discover-company": "tsx scripts/discover-company.ts",

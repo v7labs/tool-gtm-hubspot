@@ -153,7 +153,10 @@ async function main(): Promise<void> {
     }
   }
 
-  const brief = files.find((f) => basename(f) === "Brief.md");
+  // Self-describing durable name is `{slug} (Brief).md`; accept legacy `Brief.md` too.
+  const brief = files.find(
+    (f) => basename(f) === "Brief.md" || basename(f).endsWith(" (Brief).md"),
+  );
   const learnings = files.find((f) => f.endsWith("/hermes/Learnings.md"));
   const dealIndex = files.find((f) => basename(f) === "Deal.md");
 

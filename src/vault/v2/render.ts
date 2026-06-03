@@ -12,8 +12,6 @@ import { buildThirtySecondStory } from "../brief.js";
 import { hubspotSourceBanner } from "../learnings.js";
 import {
   composeBriefCallout,
-  companyEntityGist,
-  contactEntityGist,
   dealBriefGist,
   summaryFrontmatterValue,
 } from "../summary.js";
@@ -22,21 +20,20 @@ import {
   oneLineSummary,
   sortActivitiesChronological,
 } from "../timeline.js";
-import { formatDatePrefix, wikilink } from "../writer.js";
-import { accountHubWikilink } from "./paths.js";
+import { formatDatePrefix } from "../writer.js";
+import {
+  accountHubWikilink,
+  briefNoteAlias,
+  briefNoteRef,
+  contactHubWikilink,
+  dealFolderPathV2,
+} from "./paths.js";
+import { dateOnly, deriveDealTags, mergeTags } from "./tags.js";
 
 const BRIEF_TITLE = "Brief";
 const DEAL_TITLE = "Deal";
 const LEARNINGS_TITLE = "Learnings";
 const CAPITAL_DYNAMICS_COMPANY_ID = "29053398081";
-
-function dealTags(manifest: DealManifest, extra: string[]): string {
-  const tags = ["gtm", "hubspot", ...extra];
-  if (manifest.primary_company_id === CAPITAL_DYNAMICS_COMPANY_ID) {
-    tags.push("gtm/capital-dynamics");
-  }
-  return tags.join(", ");
-}
 
 function yamlQuote(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
@@ -64,15 +61,11 @@ export function entityContactTitle(contact: AssociatedRecord): string {
 
 /**
  * Path-qualified wikilink to the deal's primary-company Account note — the
- * company-nucleus hub. Deal-scoped entity/contact notes carry this so Obsidian
- * clusters everything that belongs to a company around its Account note.
- *
- * The primary company is the nucleus, and its Account note is the one the
- * account rollup guarantees on disk, so associated (non-primary) companies on
- * the deal also pin to the primary hub rather than to a never-synced account
- * (which would dangle). Returns null only when the deal has no primary company.
+ * company-nucleus hub. Associated (non-primary) companies on the deal pin to the
+ * primary hub rather than to a never-synced account (which would dangle). Returns
+ * null only when the deal has no primary company.
  */
-function accountHubLink(manifest: DealManifest): string | null {
+function accountHubLink(manifest: DealManifest, accountNoteBasename?: string): string | null {
   const primaryId = manifest.primary_company_id;
   if (!primaryId) {
     return null;
@@ -84,7 +77,60 @@ function accountHubLink(manifest: DealManifest): string | null {
   if (!primaryCompany) {
     return null;
   }
-  return accountHubWikilink(primaryId, getCompanyName(primaryCompany));
+  return accountHubWikilink(primaryId, getCompanyName(primaryCompany), accountNoteBasename);
+}
+
+function contactHubLinks(manifest: DealManifest): string {
+  return (
+    manifest.contacts
+      .map((contact) => contactHubWikilink(contact.id, getContactName(contact)))
+      .join(", ") || "—"
+  );
+}
+
+/** Path-qualified self-link to this deal's own `Deal.md` index (graph-excluded). */
+function dealIndexLink(manifest: DealManifest): string {
+  const folder = dealFolderPathV2(manifest.deal_id, manifest.deal_name);
+  return `[[${folder}/${DEAL_TITLE}|${DEAL_TITLE}]]`;
+}
+
+function pilotTag(manifest: DealManifest): string[] {
+  return manifest.primary_company_id === CAPITAL_DYNAMICS_COMPANY_ID
+    ? ["gtm/capital-dynamics"]
+    : [];
+}
+
+/**
+ * Zero-API-cost enrichment frontmatter promoted from `manifest.properties` /
+ * `manifest.owner` (already fetched). Emitted as proper YAML scalars so Bases
+ * can sum/filter: `amount` numeric & unquoted, `close_date` date-only.
+ */
+function enrichmentFrontmatterLines(manifest: DealManifest): string[] {
+  const lines: string[] = [];
+  const amount = manifest.properties.amount?.trim();
+  if (amount) {
+    lines.push(`amount: ${amount}`);
+  }
+  const closeDate = dateOnly(manifest.properties.closedate);
+  if (closeDate) {
+    lines.push(`close_date: ${closeDate}`);
+  }
+  const dealType = manifest.properties.dealtype?.trim();
+  if (dealType) {
+    lines.push(`deal_type: "${yamlQuote(dealType)}"`);
+  }
+  if (manifest.owner.name) {
+    lines.push(`deal_owner: "${yamlQuote(manifest.owner.name)}"`);
+  }
+  if (manifest.owner.id) {
+    lines.push(`deal_owner_id: "${manifest.owner.id}"`);
+  }
+  const source = manifest.properties.hs_analytics_source?.trim();
+  if (source) {
+    lines.push(`hs_analytics_source: "${yamlQuote(source)}"`);
+    lines.push(`lead_source: "${yamlQuote(source)}"`);
+  }
+  return lines;
 }
 
 export function renderBriefV2(
@@ -92,15 +138,12 @@ export function renderBriefV2(
   timeline: DealTimelineEntry[],
   titleByPath: Map<string, string>,
   preservedBrief?: string | null,
+  accountNoteBasename?: string,
 ): string {
   const primaryCompany =
     manifest.companies.find((company) => company.isPrimary) ?? manifest.companies[0];
-  const companyLink = primaryCompany
-    ? wikilink(entityCompanyTitle(primaryCompany))
-    : "—";
-  const contactLinks =
-    manifest.contacts.map((contact) => wikilink(entityContactTitle(contact))).join(", ") ||
-    "—";
+  const companyLink = accountHubLink(manifest, accountNoteBasename) ?? "—";
+  const contactLinks = contactHubLinks(manifest);
 
   const substantiveTimeline = timeline.filter((entry) => {
     if (entry.kind === "thread") {
@@ -109,7 +152,10 @@ export function renderBriefV2(
     return entry.activity.type !== "emails" || !isCalendarSubject(entry.activity.subject);
   });
 
-  const story = buildThirtySecondStory(substantiveTimeline, primaryCompany ? getCompanyName(primaryCompany) : manifest.deal_name);
+  const story = buildThirtySecondStory(
+    substantiveTimeline,
+    primaryCompany ? getCompanyName(primaryCompany) : manifest.deal_name,
+  );
 
   const briefGist = dealBriefGist(manifest, substantiveTimeline.length);
   const briefCallout = composeBriefCallout(briefGist, preservedBrief ?? null);
@@ -129,29 +175,44 @@ export function renderBriefV2(
       ? threadEntries
           .map((entry) => {
             const title = titleByPath.get(entry.path) ?? entry.title;
-            return `- ${wikilink(title)} — ${entry.summary}`;
+            return `- ${wikilinkPlain(title)} — ${entry.summary}`;
           })
           .join("\n")
       : "_No email threads on this deal._";
 
   const associationBlock = renderAssociationBlockPlain(manifest);
-
   const primaryCompanyId = manifest.primary_company_id ?? "";
 
+  const tags = mergeTags(
+    ["gtm", "hubspot", "deal-brief"],
+    pilotTag(manifest),
+    deriveDealTags(
+      manifest.motion,
+      manifest.pipeline?.label ?? "",
+      manifest.stage?.label ?? "",
+    ),
+  );
+
+  const frontmatter = [
+    "type: deal_brief",
+    `aliases: ["${briefNoteAlias()}"]`,
+    "source: hubspot",
+    `hubspot_id: "brief-${manifest.deal_id}"`,
+    `deal_hubspot_id: "${manifest.deal_id}"`,
+    `motion: ${manifest.motion}`,
+    `primary_company_id: "${primaryCompanyId}"`,
+    `pipeline_label: "${yamlQuote(manifest.pipeline?.label ?? "")}"`,
+    `stage_label: "${yamlQuote(manifest.stage?.label ?? "")}"`,
+    ...enrichmentFrontmatterLines(manifest),
+    `summary: "${summaryFrontmatterValue(briefGist)}"`,
+    `deal_note: "${dealIndexLink(manifest)}"`,
+    `hermes_learnings: "[[${LEARNINGS_TITLE}]]"`,
+    `synced_at: ${manifest.synced_at}`,
+    `tags: [${tags.join(", ")}]`,
+  ].join("\n");
+
   return `---
-type: deal_brief
-source: hubspot
-hubspot_id: "brief-${manifest.deal_id}"
-deal_hubspot_id: "${manifest.deal_id}"
-motion: ${manifest.motion}
-primary_company_id: "${primaryCompanyId}"
-pipeline_label: "${yamlQuote(manifest.pipeline?.label ?? "")}"
-stage_label: "${yamlQuote(manifest.stage?.label ?? "")}"
-summary: "${summaryFrontmatterValue(briefGist)}"
-deal_note: "[[${DEAL_TITLE}]]"
-hermes_learnings: "[[${LEARNINGS_TITLE}]]"
-synced_at: ${manifest.synced_at}
-tags: [${dealTags(manifest, ["deal-brief"])}]
+${frontmatter}
 ---
 
 # ${manifest.deal_name} — Deal Brief
@@ -160,7 +221,7 @@ ${hubspotSourceBanner()}
 
 ${briefCallout}
 
-> **CRM facts.** Hermes: [[${LEARNINGS_TITLE}]] · Index: [[${DEAL_TITLE}]]
+> **CRM facts.** Hermes: [[${LEARNINGS_TITLE}]] · Index: ${dealIndexLink(manifest)}
 
 ## At a glance
 
@@ -172,7 +233,8 @@ ${briefCallout}
 | **Pipeline** | ${manifest.pipeline?.label ?? "—"} |
 | **Motion** | ${manifest.motion} |
 | **Amount** | ${manifest.properties.amount || "—"} |
-| **Close date** | ${manifest.properties.closedate || "—"} |
+| **Close date** | ${dateOnly(manifest.properties.closedate) || "—"} |
+| **Owner** | ${manifest.owner.name ?? manifest.owner.id ?? "—"} |
 | **Touchpoints** | ${substantiveTimeline.length} substantive |
 
 ## What happened (30 seconds)
@@ -202,10 +264,9 @@ export function renderDealIndexV2(
   timeline: DealTimelineEntry[],
   calendarItems: ClassifiedActivity[],
   titleByPath: Map<string, string>,
+  accountNoteBasename?: string,
 ): string {
-  const primaryCompany =
-    manifest.companies.find((company) => company.isPrimary) ?? manifest.companies[0];
-  const companyLink = primaryCompany ? wikilink(entityCompanyTitle(primaryCompany)) : "—";
+  const companyLink = accountHubLink(manifest, accountNoteBasename) ?? "—";
 
   const tableRows = timeline.map((entry) => {
     const date = formatDatePrefix(entry.timestamp);
@@ -221,27 +282,37 @@ export function renderDealIndexV2(
   });
 
   const primaryCompanyId = manifest.primary_company_id ?? "";
+  const briefLink = briefSelfLink(manifest);
+
+  // Deal.md is the technical index — kept on disk but EXCLUDED from the graph via
+  // the `gtm/deal-index` tag, so each deal shows exactly ONE node (its Brief).
+  const tags = mergeTags(["gtm", "hubspot", "deal", "gtm/deal-index"], pilotTag(manifest));
+
+  const frontmatter = [
+    "type: deal",
+    "source: hubspot",
+    `hubspot_id: "${manifest.deal_id}"`,
+    `hubspot_url: "${manifest.hubspot_url}"`,
+    `motion: ${manifest.motion}`,
+    `primary_company_id: "${primaryCompanyId}"`,
+    `pipeline_label: "${yamlQuote(manifest.pipeline?.label ?? "")}"`,
+    `stage_label: "${yamlQuote(manifest.stage?.label ?? "")}"`,
+    ...enrichmentFrontmatterLines(manifest),
+    `deal_brief: "${briefLink}"`,
+    `hermes_learnings: "[[${LEARNINGS_TITLE}]]"`,
+    `synced_at: ${manifest.synced_at}`,
+    `tags: [${tags.join(", ")}]`,
+  ].join("\n");
 
   return `---
-type: deal
-source: hubspot
-hubspot_id: "${manifest.deal_id}"
-hubspot_url: "${manifest.hubspot_url}"
-motion: ${manifest.motion}
-primary_company_id: "${primaryCompanyId}"
-deal_brief: "[[${BRIEF_TITLE}]]"
-hermes_learnings: "[[${LEARNINGS_TITLE}]]"
-synced_at: ${manifest.synced_at}
-stage_label: "${yamlQuote(manifest.stage?.label ?? "")}"
-pipeline_label: "${yamlQuote(manifest.pipeline?.label ?? "")}"
-tags: [${dealTags(manifest, ["deal"])}]
+${frontmatter}
 ---
 
 # ${manifest.deal_name}
 
 ${hubspotSourceBanner()}
 
-> [[${BRIEF_TITLE}]] · [[${LEARNINGS_TITLE}]]
+> ${briefLink} · [[${LEARNINGS_TITLE}]]
 
 ## Outcome snapshot
 
@@ -251,7 +322,7 @@ ${hubspotSourceBanner()}
 | Pipeline | ${manifest.pipeline?.label ?? ""} |
 | Motion | ${manifest.motion} |
 | Amount | ${manifest.properties.amount ?? ""} |
-| Close date | ${manifest.properties.closedate ?? ""} |
+| Close date | ${dateOnly(manifest.properties.closedate)} |
 | Company | ${companyLink} |
 | Owner | ${manifest.owner.name ?? manifest.owner.id} |
 
@@ -281,8 +352,14 @@ ${renderAssociationBlockPlain(manifest)}
 `;
 }
 
-function escapeYamlAlias(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+/** Path-qualified self-link from Deal.md → its own renamed Brief note. */
+function briefSelfLink(manifest: DealManifest): string {
+  return `[[${briefNoteRef(manifest.deal_id, manifest.deal_name)}|${BRIEF_TITLE}]]`;
+}
+
+/** Plain wikilink to a note basename (for in-deal thread links). */
+function wikilinkPlain(title: string): string {
+  return `[[${title.replace(/\]/g, "")}]]`;
 }
 
 function renderAssociationBlockPlain(manifest: DealManifest): string {
@@ -296,113 +373,6 @@ function renderAssociationBlockPlain(manifest: DealManifest): string {
     return `- ${entityContactTitle(contact)} — ${contact.associationLabels.join(", ") || "Deal contact"}`;
   });
   return `${companyLines.join("\n")}\n${contactLines.join("\n")}\n\n_Edges sourced from manifest.yaml._`;
-}
-
-export function renderCompanyEntityV2(
-  company: AssociatedRecord,
-  manifest: DealManifest,
-  preservedBrief?: string | null,
-): string {
-  const name = getCompanyName(company);
-  const role = company.isPrimary
-    ? "Primary company"
-    : company.associationLabels.join(", ") || "Associated company";
-
-  const gist = companyEntityGist(company, manifest);
-  const briefCallout = composeBriefCallout(gist, preservedBrief ?? null);
-
-  const hubLink = accountHubLink(manifest);
-  const accountBlock = hubLink
-    ? `## Account
-
-- ${hubLink}
-
-`
-    : "";
-
-  return `---
-type: company
-source: hubspot
-hubspot_id: "${company.id}"
-aliases: ["${escapeYamlAlias(name)}"]
-association_labels: [${company.associationLabels.map((label) => `"${label}"`).join(", ")}]
-is_primary: ${company.isPrimary ? "true" : "false"}
-deal_hubspot_id: "${manifest.deal_id}"
-summary: "${summaryFrontmatterValue(gist)}"
-synced_at: ${manifest.synced_at}
-tags: [${dealTags(manifest, ["company"])}]
----
-
-# ${name}
-
-${hubspotSourceBanner()}
-
-${briefCallout}
-
-| Field | Value |
-|-------|-------|
-| Domain | ${company.properties.domain ?? ""} |
-| Industry | ${company.properties.industry ?? ""} |
-| Association | ${role} |
-
-${accountBlock}## Deal
-
-- [[${BRIEF_TITLE}]] · [[${DEAL_TITLE}]]
-`;
-}
-
-export function renderContactEntityV2(
-  contact: AssociatedRecord,
-  manifest: DealManifest,
-  relatedTitles: string[],
-  preservedBrief?: string | null,
-): string {
-  const name = getContactName(contact);
-
-  const gist = contactEntityGist(contact, manifest);
-  const briefCallout = composeBriefCallout(gist, preservedBrief ?? null);
-
-  const hubLink = accountHubLink(manifest);
-  const companyBlock = hubLink
-    ? `## Company
-
-- ${hubLink}
-
-`
-    : "";
-
-  return `---
-type: contact
-source: hubspot
-hubspot_id: "${contact.id}"
-aliases: ["${escapeYamlAlias(name)}"]
-association_labels: [${contact.associationLabels.map((label) => `"${label}"`).join(", ")}]
-deal_hubspot_id: "${manifest.deal_id}"
-summary: "${summaryFrontmatterValue(gist)}"
-synced_at: ${manifest.synced_at}
-tags: [${dealTags(manifest, ["contact"])}]
----
-
-# ${name}
-
-${hubspotSourceBanner()}
-
-${briefCallout}
-
-| Field | Value |
-|-------|-------|
-| Email | ${contact.properties.email ?? ""} |
-| Title | ${contact.properties.jobtitle ?? ""} |
-| Deal role | ${contact.associationLabels.join(", ") || "Deal contact"} |
-
-${companyBlock}## Deal
-
-- [[${BRIEF_TITLE}]] · [[${DEAL_TITLE}]]
-
-## Associated activities (HubSpot)
-
-${relatedTitles.length > 0 ? relatedTitles.map((title, index) => `${index + 1}. ${wikilink(title)}`).join("\n") : "_No associated activities._"}
-`;
 }
 
 export function renderActivityV2(
@@ -423,6 +393,10 @@ export function renderActivityV2(
       ? `\nalso_hubspot_ids: [${activity.alsoHubspotIds.map((id) => `"${id}"`).join(", ")}]`
       : "";
 
+  // NOTE: no `deal_brief` wikilink and no `> [[Brief]]` body backlink.
+  // Engagements are RECORDS indexed by Deal.md tables + the `deal_hubspot_id`
+  // frontmatter — emitting a Brief backlink per engagement is the ~7.9k-edge
+  // radial hairball this sync intentionally avoids.
   return `---
 type: activity
 source: hubspot
@@ -430,19 +404,16 @@ activity_type: ${activityTypeLabel(activity.type)}
 engagement_class: ${activity.engagementClass}
 hubspot_id: "${activity.id}"
 deal_hubspot_id: "${manifest.deal_id}"
-deal_brief: "[[${BRIEF_TITLE}]]"
 sequence: ${sequence}${alsoIds}
 associated_contact_ids: [${activity.associatedContactIds.map((id) => `"${id}"`).join(", ")}]
 occurred_at: ${activity.timestamp ?? ""}
 synced_at: ${manifest.synced_at}
-tags: [${dealTags(manifest, ["activity", "deal"])}]
+tags: [${mergeTags(["gtm", "hubspot", "activity"], pilotTag(manifest)).join(", ")}]
 ---
 
 # ${title}
 
 ${hubspotSourceBanner()}
-
-> [[${BRIEF_TITLE}]]
 
 ## Context
 
@@ -470,24 +441,22 @@ export function renderThreadV2(
   const thread = entry.thread;
   const messageIds = thread.messages.map((message) => message.activity.id);
 
+  // No `deal_brief`/`> [[Brief]]` backlink — threads are records (Deal.md table).
   return `---
 type: email_thread
 source: hubspot
 thread_key: "${thread.threadKey.replace(/"/g, "")}"
 deal_hubspot_id: "${manifest.deal_id}"
-deal_brief: "[[${BRIEF_TITLE}]]"
 sequence: ${sequence}
 message_count: ${thread.messages.length}
 hubspot_message_ids: [${messageIds.map((id) => `"${id}"`).join(", ")}]
 synced_at: ${manifest.synced_at}
-tags: [${dealTags(manifest, ["email-thread", "deal"])}]
+tags: [${mergeTags(["gtm", "hubspot", "email-thread"], pilotTag(manifest)).join(", ")}]
 ---
 
 # ${thread.displaySubject}
 
 ${hubspotSourceBanner()}
-
-> [[${BRIEF_TITLE}]]
 
 ## Thread summary
 

@@ -11,6 +11,9 @@ const COMPANY_PROPERTIES = [
   "name",
   "domain",
   "industry",
+  // Geo: drives Account `country` frontmatter + the `#gtm/geo/{country}` cluster
+  // lens (one net-new fetched property; zero extra request — same batch read).
+  "country",
   "hubspot_owner_id",
   "description",
   "hs_lastmodifieddate",

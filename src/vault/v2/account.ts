@@ -1,5 +1,5 @@
 import { mkdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { existsSync } from "node:fs";
 import type { DealManifest } from "../../hubspot/manifest.js";
 import { getCompany, listCompanyDealIds } from "../../hubspot/company.js";
@@ -19,15 +19,21 @@ import {
 import { getCompanyName, getDealName } from "../../hubspot/deals.js";
 import { companyRecordUrl } from "../../hubspot/company.js";
 import { hubspotSourceBanner } from "../learnings.js";
-import { upsertVaultNote, wikilink } from "../writer.js";
+import { findVaultFileByHubspotId, upsertVaultNote } from "../writer.js";
 import {
   accountGist,
   composeBriefCallout,
   extractHermesBrief,
   summaryFrontmatterValue,
 } from "../summary.js";
-import { accountFolderPathV2, dealFolderPathV2 } from "./paths.js";
-import { briefNoteTitle } from "./render.js";
+import {
+  accountFolderPathV2,
+  accountNoteTitle,
+  briefHubWikilink,
+  companySlug,
+  dealFolderPathV2,
+} from "./paths.js";
+import { deriveAccountTags, mergeTags } from "./tags.js";
 
 // Only the fields the account rollup table renders, plus the inputs
 // `deriveMotion` needs. Deliberately a small subset of the full deal-property
@@ -60,19 +66,20 @@ export function extractBaseEmbeds(content: string): string[] {
 }
 
 /**
- * Read an existing Account.md once. Both preservation passes (Bases embeds and
- * the Hermes brief) derive from the SAME note, so the rollup reads the file a
- * single time and runs the pure extractors over the in-memory string. Missing
- * or unreadable file → empty string, which both extractors treat as "nothing to
- * preserve" (`extractBaseEmbeds` → [], `extractHermesBrief` → null), matching
- * the prior per-extractor fallbacks exactly.
+ * Read the EXISTING account note (located by company id, regardless of its
+ * filename) once. Both preservation passes (Bases embeds and the Hermes brief)
+ * derive from the SAME note, so the rollup reads the file a single time. This is
+ * located by id (not a fixed path) so the v3 rename `Account.md` →
+ * `{slug} (Account).md` still preserves the prior note's Hermes brief + embeds.
+ * Missing/unreadable → empty string ("nothing to preserve").
  */
 async function readExistingAccountNote(
   vaultPath: string,
-  relativePath: string,
+  companyId: string,
+  folder: string,
 ): Promise<string> {
-  const absolute = join(vaultPath, relativePath);
-  if (!existsSync(absolute)) {
+  const absolute = await findVaultFileByHubspotId(vaultPath, companyId, folder);
+  if (!absolute || !existsSync(absolute)) {
     return "";
   }
   try {
@@ -88,8 +95,29 @@ export function accountFolderPath(companyId: string, companyName: string): strin
   return accountFolderPathV2(companyId, companyName);
 }
 
-export function accountFileName(): string {
-  return "Account.md";
+/** Self-describing account filename: `{company-slug} (Account).md`. */
+export function accountFileName(companyName: string): string {
+  return `${companySlug(companyName)} (Account).md`;
+}
+
+/**
+ * Resolve the account note's basename (no `.md`), PRESERVING the existing
+ * on-disk note name so a re-sync never renames a live account (which would
+ * orphan every link to it). Only brand-new accounts (no note yet) get the
+ * computed `{slug} (Account)`. This is the durability guarantee: link generators
+ * and the rollup writer both derive the filename from disk, so they can't drift.
+ */
+export async function resolveAccountNoteBasename(
+  vaultPath: string,
+  companyId: string,
+  companyName: string,
+): Promise<string> {
+  const folder = accountFolderPath(companyId, companyName);
+  const existing = await findVaultFileByHubspotId(vaultPath, companyId, folder);
+  if (existing) {
+    return basename(existing, ".md");
+  }
+  return `${companySlug(companyName)} (Account)`;
 }
 
 export type AccountDealRow = {
@@ -106,16 +134,19 @@ export function renderAccountMd(params: {
   companyId: string;
   companyName: string;
   companyDomain: string;
+  companyIndustry: string;
+  companyCountry: string;
   hubspotUrl: string;
   syncedAt: string;
   deals: AccountDealRow[];
   baseEmbeds?: string[];
   preservedBrief?: string | null;
 }): string {
-  const tags = ["gtm", "hubspot", "account"];
-  if (params.companyId === CAPITAL_DYNAMICS_COMPANY_ID) {
-    tags.push("gtm/capital-dynamics");
-  }
+  const tags = mergeTags(
+    ["gtm", "hubspot", "account"],
+    params.companyId === CAPITAL_DYNAMICS_COMPANY_ID ? ["gtm/capital-dynamics"] : [],
+    deriveAccountTags(params.companyIndustry, params.companyCountry),
+  );
 
   const gist = accountGist({
     companyName: params.companyName,
@@ -145,7 +176,7 @@ ${embeds.join("\n")}
 
   const dealRows = params.deals
     .map((deal) => {
-      const briefLink = wikilink(`${deal.briefFolder}/${briefNoteTitle()}`);
+      const briefLink = briefHubWikilink(deal.dealId, deal.dealName);
       return `| ${deal.dealName.replace(/\|/g, "\\|")} | ${deal.motion} | ${deal.stageLabel.replace(/\|/g, "\\|")} | ${deal.pipelineLabel.replace(/\|/g, "\\|")} | ${deal.amount || "—"} | ${briefLink} |`;
     })
     .join("\n");
@@ -154,18 +185,25 @@ ${embeds.join("\n")}
     params.deals.length > 0
       ? params.deals
           .slice(0, 8)
-          .map((deal) => `- ${wikilink(`${deal.briefFolder}/${briefNoteTitle()}`)} — ${deal.dealName}`)
+          .map((deal) => `- ${briefHubWikilink(deal.dealId, deal.dealName)} — ${deal.dealName}`)
           .join("\n")
       : "_No deals linked to this account._";
 
+  const frontmatter = [
+    "type: account",
+    "source: hubspot",
+    `hubspot_id: "${params.companyId}"`,
+    `aliases: ["${params.companyName.replace(/"/g, '\\"')}", "${accountNoteTitle()}"]`,
+    ...(params.companyIndustry ? [`industry: "${params.companyIndustry.replace(/"/g, '\\"')}"`] : []),
+    ...(params.companyCountry ? [`country: "${params.companyCountry.replace(/"/g, '\\"')}"`] : []),
+    ...(params.companyDomain ? [`domain: "${params.companyDomain.replace(/"/g, '\\"')}"`] : []),
+    `summary: "${summaryFrontmatterValue(gist)}"`,
+    `synced_at: ${params.syncedAt}`,
+    `tags: [${tags.join(", ")}]`,
+  ].join("\n");
+
   return `---
-type: account
-source: hubspot
-hubspot_id: "${params.companyId}"
-aliases: ["${params.companyName.replace(/"/g, '\\"')}"]
-summary: "${summaryFrontmatterValue(gist)}"
-synced_at: ${params.syncedAt}
-tags: [${tags.join(", ")}]
+${frontmatter}
 ---
 
 # ${params.companyName}
@@ -175,9 +213,9 @@ ${hubspotSourceBanner()}
 ${briefCallout}
 
 > [!important] Account snapshot
-> | Domain | Deals | Pilot |
-> |--------|-------|-------|
-> | ${params.companyDomain || "—"} | ${params.deals.length} | ${params.companyId === CAPITAL_DYNAMICS_COMPANY_ID ? "Capital Dynamics" : "—"} |
+> | Domain | Industry | Country | Deals | Pilot |
+> |--------|----------|---------|-------|-------|
+> | ${params.companyDomain || "—"} | ${params.companyIndustry || "—"} | ${params.companyCountry || "—"} | ${params.deals.length} | ${params.companyId === CAPITAL_DYNAMICS_COMPANY_ID ? "Capital Dynamics" : "—"} |
 
 ${viewsBlock}## Deals
 
@@ -215,11 +253,15 @@ export async function syncAccountRollup(
 
   const deals = await buildAccountDealRows(dealIds, vaultPath, seedManifest);
 
-  const relativePath = `${folder}/${accountFileName()}`;
+  // Preserve the existing note's filename (never rename a live account); only a
+  // brand-new account gets the computed `{slug} (Account).md`.
+  const accountBasename = await resolveAccountNoteBasename(vaultPath, companyId, companyName);
+  const relativePath = `${folder}/${accountBasename}.md`;
   await mkdir(join(vaultPath, folder), { recursive: true });
-  // One read of the existing note feeds both preservation passes (was two
-  // separate readFile calls over the same Account.md).
-  const existingNote = await readExistingAccountNote(vaultPath, relativePath);
+  // One read of the existing note feeds both preservation passes. Dedup is
+  // scoped to the account folder + keyed by company id, so a re-sync that
+  // renames `Account.md` → `{slug} (Account).md` upserts in place (old removed).
+  const existingNote = await readExistingAccountNote(vaultPath, companyId, folder);
   const baseEmbeds = extractBaseEmbeds(existingNote);
   const preservedBrief = extractHermesBrief(existingNote);
   const saved = await upsertVaultNote(
@@ -229,6 +271,8 @@ export async function syncAccountRollup(
       companyId,
       companyName,
       companyDomain: company.properties.domain?.trim() ?? "",
+      companyIndustry: company.properties.industry?.trim() ?? "",
+      companyCountry: company.properties.country?.trim() ?? "",
       hubspotUrl: companyRecordUrl(companyId),
       syncedAt,
       deals,
