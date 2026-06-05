@@ -13,7 +13,7 @@ import {
   contactHubPath,
   contactsHubFolder,
 } from "./paths.js";
-import { mergeTags } from "./tags.js";
+import { isAutomationContact, mergeTags } from "./tags.js";
 
 const CAPITAL_DYNAMICS_COMPANY_ID = "29053398081";
 
@@ -72,9 +72,13 @@ export async function upsertContactHub(
 
   const isPilot =
     existing.pilot || companyIds.includes(CAPITAL_DYNAMICS_COMPANY_ID);
+  // Automation/bot "contacts" (Chili Piper, mailer-daemon, no-reply, HubSpot BCC,
+  // …) get `gtm/automation` so the graph filter excludes them — derived from the
+  // synced email/name so a re-sync can never reintroduce the hairball.
   const tags = mergeTags(
     ["gtm", "hubspot", "contact"],
     isPilot ? ["gtm/capital-dynamics"] : [],
+    isAutomationContact(email, name) ? ["gtm/automation"] : [],
   );
 
   const aliasName = name.replace(/[[\]|"]/g, "").trim();
