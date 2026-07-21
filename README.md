@@ -1,3 +1,5 @@
+> **ARCHIVED:** moved to [`tool-gtm-vault/packages/hubspot`](https://github.com/v7labs/tool-gtm-vault/tree/main/packages/hubspot). See [ARCHIVED.md](ARCHIVED.md).
+
 # tool-gtm-hubspot
 
 MCP server that syncs HubSpot CRM into the GTM Obsidian vault (`tool-gtm-vault`). Writes deal briefs, engagements, email threads, and association graphs as markdown with `source: hubspot`.
